@@ -10,11 +10,11 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict
 
-from .config import FarmingConfig
-from .funding_fetcher import FundingDataFetcher
-from .trade_executor import TradeExecutor
-from .position_manager import PositionManager, FarmingPosition
-from .telegram_notifier import TelegramNotifier
+from config import FarmingConfig
+from funding_fetcher import FundingDataFetcher
+from trade_executor import TradeExecutor
+from position_manager import PositionManager, FarmingPosition
+from telegram_notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
 

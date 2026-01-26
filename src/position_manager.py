@@ -13,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 
-from .trade_executor import TradeExecutor
+from trade_executor import TradeExecutor
 
 logger = logging.getLogger(__name__)
 
