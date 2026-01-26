@@ -58,27 +58,18 @@ def main():
         # Load configuration
         config = FarmingConfig()
         
-        # Validate configuration
-        errors = config.validate()
-        if errors:
-            for error in errors:
-                logger.error(f"Config Error: {error}")
-            logger.error("")
-            logger.error("Please set the following environment variables in Railway:")
-            logger.error("  - MUDREX_API_SECRET")
-            logger.error("  - TELEGRAM_BOT_TOKEN")
-            logger.error("  - TELEGRAM_CHAT_ID")
-            logger.error("")
-            logger.error("Or set DRY_RUN=true to test without trading")
-            sys.exit(1)
+        # Log configuration warnings (non-blocking)
+        warnings = config.validate()
+        for warning in warnings:
+            logger.warning(f"Config: {warning}")
         
         logger.info(f"Configuration loaded:")
-        logger.info(f"  - Dry Run: {config.DRY_RUN}")
         logger.info(f"  - Rate Threshold: {config.EXTREME_RATE_THRESHOLD * 100:.2f}%")
         logger.info(f"  - Entry Window: {config.ENTRY_MIN_MINUTES_BEFORE}-{config.ENTRY_MAX_MINUTES_BEFORE} mins")
         logger.info(f"  - Max Positions: {config.MAX_CONCURRENT_POSITIONS}")
         logger.info(f"  - Min Order: ${config.MIN_ORDER_VALUE_USD}")
-        logger.info(f"  - Telegram: Enabled")
+        logger.info(f"  - Telegram: {'Enabled' if config.TELEGRAM_BOT_TOKEN else 'Disabled'}")
+        logger.info(f"  - Mudrex API: {'Configured' if config.MUDREX_API_SECRET else 'NOT SET'}")
         
         # Initialize strategy engine
         engine = StrategyEngine(config)
@@ -99,7 +90,6 @@ def main():
                 "running": engine.running,
                 "active_positions": engine.position_manager.get_active_count(),
                 "max_positions": config.MAX_CONCURRENT_POSITIONS,
-                "dry_run": config.DRY_RUN,
                 "uptime": f"{hours}h {minutes}m {seconds}s",
                 "last_scan": "Every 30s"
             }

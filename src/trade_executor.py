@@ -47,22 +47,20 @@ class TradeResult:
 class TradeExecutor:
     """Execute trades via Mudrex API"""
     
-    def __init__(self, api_secret: str, dry_run: bool = False):
+    def __init__(self, api_secret: str):
         self.api_secret = api_secret
-        self.dry_run = dry_run
         self.client = None
         
-        if not dry_run and MUDREX_AVAILABLE and api_secret:
+        if MUDREX_AVAILABLE and api_secret:
             try:
                 self.client = MudrexClient(api_secret=api_secret)
                 logger.info("Mudrex client initialized successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize Mudrex client: {e}")
         elif not MUDREX_AVAILABLE:
-            logger.warning("Mudrex SDK not available - running in limited mode")
-        
-        if dry_run:
-            logger.info("Trade executor running in DRY RUN mode")
+            logger.warning("Mudrex SDK not available - will not be able to trade")
+        elif not api_secret:
+            logger.warning("No API secret provided - will not be able to trade")
     
     def check_symbol_available(self, symbol: str) -> bool:
         """
@@ -74,9 +72,6 @@ class TradeExecutor:
         Returns:
             True if symbol is available
         """
-        if self.dry_run:
-            return True
-        
         if not self.client:
             logger.warning("No Mudrex client - assuming symbol available")
             return True
@@ -98,14 +93,6 @@ class TradeExecutor:
         Returns:
             Asset info dict or None
         """
-        if self.dry_run:
-            return {
-                "symbol": symbol,
-                "min_quantity": "0.001",
-                "max_leverage": 100,
-                "is_active": True
-            }
-        
         if not self.client:
             return None
         
@@ -131,9 +118,6 @@ class TradeExecutor:
         Returns:
             Available balance as float or None
         """
-        if self.dry_run:
-            return 1000.0  # Mock balance for dry run
-        
         if not self.client:
             return None
         
@@ -224,22 +208,10 @@ class TradeExecutor:
         """
         logger.info(f"Opening {side} position: {symbol} qty={quantity} leverage={leverage}x")
         
-        if self.dry_run:
-            logger.info(f"[DRY RUN] Would open {side} {quantity} {symbol} @ {leverage}x")
-            return TradeResult(
-                success=True,
-                position_id=f"dry_run_{symbol}_{side}",
-                symbol=symbol,
-                side=side,
-                quantity=quantity,
-                leverage=leverage,
-                entry_price=0.0  # Would be filled from API
-            )
-        
         if not self.client:
             return TradeResult(
                 success=False,
-                error="Mudrex client not initialized"
+                error="Mudrex client not initialized - check API secret"
             )
         
         try:
@@ -302,10 +274,6 @@ class TradeExecutor:
         """
         logger.info(f"Closing position: {position_id}")
         
-        if self.dry_run:
-            logger.info(f"[DRY RUN] Would close position {position_id}")
-            return True
-        
         if not self.client:
             logger.error("Mudrex client not initialized")
             return False
@@ -325,9 +293,6 @@ class TradeExecutor:
         Returns:
             List of position dicts
         """
-        if self.dry_run:
-            return []
-        
         if not self.client:
             return []
         
@@ -361,9 +326,6 @@ class TradeExecutor:
         Returns:
             Unrealized PnL or None
         """
-        if self.dry_run:
-            return 0.0
-        
         if not self.client:
             return None
         

@@ -29,8 +29,7 @@ class StrategyEngine:
         # Initialize components
         self.fetcher = FundingDataFetcher(config.FUNDING_API_BASE_URL)
         self.executor = TradeExecutor(
-            api_secret=config.MUDREX_API_SECRET,
-            dry_run=config.DRY_RUN
+            api_secret=config.MUDREX_API_SECRET
         )
         self.position_manager = PositionManager(
             executor=self.executor,
@@ -67,7 +66,6 @@ class StrategyEngine:
         logger.info(f"Scan interval: {self.config.SCAN_INTERVAL_SECONDS}s")
         logger.info(f"Entry window: {self.config.ENTRY_MIN_MINUTES_BEFORE}-{self.config.ENTRY_MAX_MINUTES_BEFORE} mins before settlement")
         logger.info(f"Threshold: {self.config.EXTREME_RATE_THRESHOLD * 100:.2f}%")
-        logger.info(f"Dry run: {self.config.DRY_RUN}")
         
         while self.running:
             try:
@@ -357,10 +355,9 @@ class StrategyEngine:
     
     def _notify_startup(self) -> None:
         """Send startup notification with config summary"""
-        mode = "DRY RUN" if self.config.DRY_RUN else "LIVE"
         
         config_summary = f"""
-<b>Mode:</b> {mode}
+<b>Mode:</b> LIVE
 <b>Threshold:</b> {self.config.EXTREME_RATE_THRESHOLD * 100:.2f}%
 <b>Entry Window:</b> {self.config.ENTRY_MIN_MINUTES_BEFORE}-{self.config.ENTRY_MAX_MINUTES_BEFORE} mins
 <b>Max Positions:</b> {self.config.MAX_CONCURRENT_POSITIONS}
@@ -375,6 +372,5 @@ class StrategyEngine:
             "running": self.running,
             "active_positions": self.position_manager.get_active_count(),
             "max_positions": self.config.MAX_CONCURRENT_POSITIONS,
-            "dry_run": self.config.DRY_RUN,
             "performance": self.position_manager.get_performance_stats()
         }

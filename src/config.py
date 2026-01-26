@@ -92,9 +92,6 @@ class FarmingConfig:
     # How often to scan for opportunities (seconds)
     SCAN_INTERVAL_SECONDS: int = 30
     
-    # Enable dry run mode (no actual trades)
-    DRY_RUN: bool = field(default_factory=lambda: os.getenv("DRY_RUN", "false").lower() == "true")
-    
     # ==========================================================================
     # API ENDPOINTS
     # ==========================================================================
@@ -106,15 +103,15 @@ class FarmingConfig:
         pass
     
     def validate(self):
-        """Validate required settings - call this explicitly"""
-        errors = []
-        if not self.MUDREX_API_SECRET and not self.DRY_RUN:
-            errors.append("MUDREX_API_SECRET is required when not in dry-run mode")
+        """Validate settings and return warnings (non-blocking)"""
+        warnings = []
+        if not self.MUDREX_API_SECRET:
+            warnings.append("MUDREX_API_SECRET not set - trading will not work")
         if not self.TELEGRAM_BOT_TOKEN:
-            errors.append("TELEGRAM_BOT_TOKEN is required for notifications")
+            warnings.append("TELEGRAM_BOT_TOKEN not set - notifications disabled")
         if not self.TELEGRAM_CHAT_ID:
-            errors.append("TELEGRAM_CHAT_ID is required for notifications")
-        return errors
+            warnings.append("TELEGRAM_CHAT_ID not set - notifications disabled")
+        return warnings
     
     @property
     def total_fee_percent(self) -> float:
