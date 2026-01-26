@@ -42,6 +42,12 @@ class StrategyEngine:
             chat_id=config.TELEGRAM_CHAT_ID
         )
         
+        # Daily summary tracking
+        self._last_summary_date = None
+        self._daily_trades = 0
+        self._daily_pnl = 0.0
+        self._daily_funding = 0.0
+        
         logger.info("Strategy engine initialized")
     
     async def run(self) -> None:
@@ -51,6 +57,9 @@ class StrategyEngine:
         # Send startup notification
         self._notify_startup()
         
+        # Initialize daily tracking
+        self._last_summary_date = datetime.now(timezone.utc).date()
+        
         logger.info("Starting funding fee farming strategy...")
         logger.info(f"Scan interval: {self.config.SCAN_INTERVAL_SECONDS}s")
         logger.info(f"Entry window: {self.config.ENTRY_MIN_MINUTES_BEFORE}-{self.config.ENTRY_MAX_MINUTES_BEFORE} mins before settlement")
@@ -59,6 +68,9 @@ class StrategyEngine:
         
         while self.running:
             try:
+                # Check for daily summary (at midnight UTC)
+                await self._check_daily_summary()
+                
                 # Scan for opportunities and enter if appropriate
                 await self.scan_and_enter()
                 
@@ -72,6 +84,35 @@ class StrategyEngine:
                 logger.error(f"Error in main loop: {e}", exc_info=True)
                 self.notifier.notify_error("Main Loop Error", str(e))
                 await asyncio.sleep(60)  # Wait a bit before retrying
+    
+    async def _check_daily_summary(self) -> None:
+        """Check if we need to send daily summary (at midnight UTC)"""
+        today = datetime.now(timezone.utc).date()
+        
+        if self._last_summary_date and today > self._last_summary_date:
+            # New day - send summary for previous day
+            stats = self.position_manager.get_performance_stats()
+            
+            self.notifier.notify_daily_summary(
+                trades_count=self._daily_trades,
+                total_pnl=self._daily_pnl,
+                total_funding=self._daily_funding,
+                win_rate=stats.get("win_rate", 0.0)
+            )
+            
+            logger.info(f"Daily summary sent: {self._daily_trades} trades, ${self._daily_pnl:.4f} PnL")
+            
+            # Reset daily counters
+            self._daily_trades = 0
+            self._daily_pnl = 0.0
+            self._daily_funding = 0.0
+            self._last_summary_date = today
+    
+    def _record_trade_for_daily(self, pnl: float, funding: float) -> None:
+        """Record a completed trade for daily summary"""
+        self._daily_trades += 1
+        self._daily_pnl += pnl
+        self._daily_funding += funding
     
     def stop(self) -> None:
         """Stop the strategy"""
@@ -277,6 +318,9 @@ class StrategyEngine:
                         pnl = current_pnl + position.funding_amount
                         entry_value = float(position.quantity) * position.entry_price
                         pnl_percent = (pnl / entry_value * 100) if entry_value > 0 else 0
+                        
+                        # Record for daily summary
+                        self._record_trade_for_daily(pnl, position.funding_amount)
                         
                         # Notify exit
                         self.notifier.notify_exit(
