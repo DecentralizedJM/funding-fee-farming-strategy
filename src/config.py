@@ -43,6 +43,15 @@ class FarmingConfig:
     ENTRY_MAX_MINUTES_BEFORE: int = 5   # Maximum 5 minutes before
     
     # ==========================================================================
+    # RISK MANAGEMENT
+    # ==========================================================================
+    # Stop loss percentage (e.g. 0.005 = 0.5%)
+    STOP_LOSS_PERCENT: float = 0.005
+    
+    # Maximum daily loss in USD
+    MAX_DAILY_LOSS_USD: float = 10.0
+    
+    # ==========================================================================
     # EXIT TIMING
     # ==========================================================================
     # Minimum profit percentage to exit (after fees)

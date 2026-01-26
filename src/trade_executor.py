@@ -7,8 +7,10 @@ Designed for Mudrex Futures trading.
 """
 
 import logging
-from typing import Optional, List, Dict, Any
+import time
+from typing import Optional, List, Dict, Any, Callable
 from dataclasses import dataclass
+from functools import wraps
 
 try:
     # Try the installed package name first
@@ -28,6 +30,29 @@ except ImportError:
         Asset = None
 
 logger = logging.getLogger(__name__)
+
+
+def retry_api_call(max_retries: int = 3, delay: float = 1.0):
+    """Decorator to retry API calls with exponential backoff"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_error = None
+            for i in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_error = e
+                    wait_time = delay * (2 ** i)
+                    logger.warning(f"API call failed: {e}. Retrying in {wait_time}s ({i+1}/{max_retries})")
+                    time.sleep(wait_time)
+            
+            # If we get here, all retries failed
+            logger.error(f"API call failed after {max_retries} retries: {last_error}")
+            # Let the caller handle the final exception or return error result
+            raise last_error
+        return wrapper
+    return decorator
 
 
 @dataclass
@@ -62,6 +87,7 @@ class TradeExecutor:
         elif not api_secret:
             logger.warning("No API secret provided - will not be able to trade")
     
+    @retry_api_call(max_retries=3, delay=1.0)
     def check_symbol_available(self, symbol: str) -> bool:
         """
         Verify symbol is tradeable on Mudrex
@@ -83,6 +109,7 @@ class TradeExecutor:
             logger.error(f"Error checking symbol {symbol}: {e}")
             return False
     
+    @retry_api_call(max_retries=3, delay=1.0)
     def get_asset_info(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
         Get asset information including min quantity and max leverage
@@ -111,6 +138,7 @@ class TradeExecutor:
         
         return None
     
+    @retry_api_call(max_retries=3, delay=1.0)
     def get_futures_balance(self) -> Optional[float]:
         """
         Get available futures balance
@@ -158,11 +186,15 @@ class TradeExecutor:
                 min_qty = min_order_value_usd / price
                 qty_step = 0.001
             
-            # Calculate quantity for minimum margin
-            # margin = quantity * price / leverage
-            # We want margin ≈ min_order_value / leverage (to minimize exposure)
-            target_margin = min_order_value_usd
-            quantity = (target_margin * leverage) / price
+            # Calculate quantity for minimum order value check
+            # We want Position Value ≈ min_order_value_usd (not Margin)
+            # This ensures we satisfy the exchange's minimum order size without over-committing capital
+            
+            # Old incorrect logic: target_margin = min_order_value
+            # New logic: target_position_value = min_order_value
+            
+            target_value = min_order_value_usd
+            quantity = target_value / price
             
             # Round to nearest step
             if qty_step > 0:
@@ -187,6 +219,7 @@ class TradeExecutor:
             logger.error(f"Error calculating position size: {e}")
             return None
     
+    @retry_api_call(max_retries=3, delay=1.0)
     def open_position(
         self,
         symbol: str,
@@ -262,6 +295,7 @@ class TradeExecutor:
                 error=str(e)
             )
     
+    @retry_api_call(max_retries=5, delay=1.0)  # More retries for closing
     def close_position(self, position_id: str) -> bool:
         """
         Close a position
@@ -286,6 +320,7 @@ class TradeExecutor:
             logger.error(f"Error closing position {position_id}: {e}")
             return False
     
+    @retry_api_call(max_retries=3, delay=1.0)
     def get_open_positions(self) -> List[Dict]:
         """
         Get all open positions
@@ -316,6 +351,7 @@ class TradeExecutor:
             logger.error(f"Error getting open positions: {e}")
             return []
     
+    @retry_api_call(max_retries=3, delay=1.0)
     def get_position_pnl(self, position_id: str) -> Optional[float]:
         """
         Get current PnL of a position

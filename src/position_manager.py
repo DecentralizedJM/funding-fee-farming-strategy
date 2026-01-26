@@ -138,7 +138,9 @@ class PositionManager:
         self,
         position: FarmingPosition,
         current_pnl: float,
+        current_funding_rate: Optional[float] = None,
         min_profit_percent: float = 0.05,
+        stop_loss_percent: float = 0.005,
         max_hold_minutes: int = 30
     ) -> Tuple[bool, str]:
         """
@@ -147,13 +149,32 @@ class PositionManager:
         Args:
             position: The position to check
             current_pnl: Current unrealized PnL
+            current_funding_rate: Current funding rate (for reversal check)
             min_profit_percent: Minimum profit to exit
+            stop_loss_percent: Stop loss percentage
             max_hold_minutes: Maximum hold time after settlement
         
         Returns:
             Tuple of (should_exit, reason)
         """
         now = datetime.now(timezone.utc)
+        
+        # Check Stop Loss (Always active)
+        entry_value = float(position.quantity) * position.entry_price
+        if entry_value > 0:
+            current_pnl_percent = current_pnl / entry_value
+            if current_pnl_percent <= -stop_loss_percent:
+                return True, f"Stop loss triggered: {current_pnl_percent*100:.2f}% <= -{stop_loss_percent*100:.2f}%"
+        
+        # Check Funding Rate Reversal (Always active)
+        # If rate flips against us, we should exit to avoid paying fees
+        if current_funding_rate is not None:
+            # Long position: paying if rate > 0
+            if position.side == "LONG" and current_funding_rate > 0.0001:  # Small buffer
+                return True, f"Funding rate reversal: {current_funding_rate*100:.4f}% (Longs pay)"
+            # Short position: paying if rate < 0
+            if position.side == "SHORT" and current_funding_rate < -0.0001:  # Small buffer
+                return True, f"Funding rate reversal: {current_funding_rate*100:.4f}% (Shorts pay)"
         
         # Check if settlement has occurred
         if now < position.funding_settlement_time:

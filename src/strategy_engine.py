@@ -137,6 +137,11 @@ class StrategyEngine:
         # Skip if paused via /kill command
         if self._paused:
             return
+            
+        # Check daily loss limit
+        if self._daily_pnl <= -self.config.MAX_DAILY_LOSS_USD:
+            logger.warning(f"Daily loss limit reached (${self._daily_pnl:.2f} <= -${self.config.MAX_DAILY_LOSS_USD}). Pausing new entries.")
+            return
         
         # Check if we can open more positions
         active_count = self.position_manager.get_active_count()
@@ -306,20 +311,24 @@ class StrategyEngine:
                 # Get current PnL
                 current_pnl = self.executor.get_position_pnl(position.position_id) or 0.0
                 
+                # Get current market data
+                tickers = self.fetcher.get_tickers([position.symbol])
+                ticker_data = tickers.get(position.symbol, {})
+                exit_price = ticker_data.get("lastPrice", position.entry_price)
+                current_funding_rate = ticker_data.get("fundingRate")
+                
                 # Check exit conditions
                 should_exit, reason = self.position_manager.should_exit(
                     position=position,
                     current_pnl=current_pnl,
+                    current_funding_rate=current_funding_rate,
                     min_profit_percent=self.config.MIN_PROFIT_PERCENT,
+                    stop_loss_percent=self.config.STOP_LOSS_PERCENT,
                     max_hold_minutes=self.config.MAX_HOLD_MINUTES_AFTER_SETTLEMENT
                 )
                 
                 if should_exit:
                     logger.info(f"Exiting {position.symbol}: {reason}")
-                    
-                    # Get current price for exit
-                    tickers = self.fetcher.get_tickers([position.symbol])
-                    exit_price = tickers.get(position.symbol, {}).get("lastPrice", position.entry_price)
                     
                     # Execute exit
                     success = self.position_manager.execute_exit(
