@@ -324,6 +324,9 @@ class StrategyEngine:
                     current_funding_rate=current_funding_rate,
                     min_profit_percent=self.config.MIN_PROFIT_PERCENT,
                     stop_loss_percent=self.config.STOP_LOSS_PERCENT,
+                    trailing_stop_enabled=self.config.TRAILING_STOP_ENABLED,
+                    trailing_activation_percent=self.config.TRAILING_ACTIVATION_PERCENT,
+                    trailing_callback_percent=self.config.TRAILING_CALLBACK_PERCENT,
                     max_hold_minutes=self.config.MAX_HOLD_MINUTES_AFTER_SETTLEMENT
                 )
                 

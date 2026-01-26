@@ -52,8 +52,17 @@ class FarmingConfig:
     MAX_DAILY_LOSS_USD: float = 10.0
     
     # ==========================================================================
-    # EXIT TIMING
+    # EXIT TIMING & STRATEGY
     # ==========================================================================
+    
+    # 1. Trailing Stop (Let winners run)
+    TRAILING_STOP_ENABLED: bool = True
+    # Activate trailing stop when profit > 0.1%
+    TRAILING_ACTIVATION_PERCENT: float = 0.001 
+    # Exit if profit drops 0.02% from peak
+    TRAILING_CALLBACK_PERCENT: float = 0.0002 
+    
+    # 2. Base Targets
     # Minimum profit percentage to exit (after fees)
     MIN_PROFIT_PERCENT: float = 0.05  # 0.05%
     
