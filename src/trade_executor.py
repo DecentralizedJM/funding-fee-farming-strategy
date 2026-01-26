@@ -7,22 +7,25 @@ Designed for Mudrex Futures trading.
 """
 
 import logging
-import sys
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 
-# Add mudrex SDK to path if needed
-sys.path.insert(0, '/Users/jm/.gemini/antigravity/scratch/mudrex-sdk-reference')
-
 try:
+    # Try the installed package name first
     from mudrex import MudrexClient
     from mudrex.models import Position, Asset
     MUDREX_AVAILABLE = True
 except ImportError:
-    MUDREX_AVAILABLE = False
-    MudrexClient = None
-    Position = None
-    Asset = None
+    try:
+        # Fallback for different package structures
+        from mudrex_trading_sdk import MudrexClient
+        from mudrex_trading_sdk.models import Position, Asset
+        MUDREX_AVAILABLE = True
+    except ImportError:
+        MUDREX_AVAILABLE = False
+        MudrexClient = None
+        Position = None
+        Asset = None
 
 logger = logging.getLogger(__name__)
 

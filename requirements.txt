@@ -1,5 +1,5 @@
 # Mudrex SDK (from GitHub)
-mudrex @ git+https://github.com/DecentralizedJM/mudrex-api-trading-python-sdk.git
+mudrex-trading-sdk @ git+https://github.com/DecentralizedJM/mudrex-api-trading-python-sdk.git
 
 # Core dependencies
 requests>=2.28.0
