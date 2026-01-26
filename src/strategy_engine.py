@@ -158,6 +158,11 @@ class StrategyEngine:
         
         logger.info(f"Attempting entry: {symbol} {side} @ rate {funding_rate*100:.4f}%")
         
+        # Check if symbol is available on Mudrex (skip if not)
+        if not self.executor.check_symbol_available(symbol):
+            logger.warning(f"Symbol {symbol} not available on Mudrex - skipping")
+            return False
+        
         # Notify opportunity
         self.notifier.notify_opportunity_detected(
             symbol=symbol,
