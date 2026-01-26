@@ -48,6 +48,9 @@ class StrategyEngine:
         self._daily_pnl = 0.0
         self._daily_funding = 0.0
         
+        # Pause state for telegram control
+        self._paused = False
+        
         logger.info("Strategy engine initialized")
     
     async def run(self) -> None:
@@ -114,6 +117,16 @@ class StrategyEngine:
         self._daily_pnl += pnl
         self._daily_funding += funding
     
+    def pause(self) -> None:
+        """Pause the strategy (stop entering new positions)"""
+        self._paused = True
+        logger.info("Strategy PAUSED - will not enter new positions")
+    
+    def resume(self) -> None:
+        """Resume the strategy"""
+        self._paused = False
+        logger.info("Strategy RESUMED - actively scanning for opportunities")
+    
     def stop(self) -> None:
         """Stop the strategy"""
         self.running = False
@@ -123,6 +136,10 @@ class StrategyEngine:
         """
         Scan for extreme funding opportunities and enter positions
         """
+        # Skip if paused via /kill command
+        if self._paused:
+            return
+        
         # Check if we can open more positions
         active_count = self.position_manager.get_active_count()
         if active_count >= self.config.MAX_CONCURRENT_POSITIONS:

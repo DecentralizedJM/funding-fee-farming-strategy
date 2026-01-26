@@ -102,8 +102,19 @@ class FarmingConfig:
     
     def __post_init__(self):
         """Validate configuration after initialization"""
+        # Validation moved to main.py for better error handling
+        pass
+    
+    def validate(self):
+        """Validate required settings - call this explicitly"""
+        errors = []
         if not self.MUDREX_API_SECRET and not self.DRY_RUN:
-            raise ValueError("MUDREX_API_SECRET is required when not in dry-run mode")
+            errors.append("MUDREX_API_SECRET is required when not in dry-run mode")
+        if not self.TELEGRAM_BOT_TOKEN:
+            errors.append("TELEGRAM_BOT_TOKEN is required for notifications")
+        if not self.TELEGRAM_CHAT_ID:
+            errors.append("TELEGRAM_CHAT_ID is required for notifications")
+        return errors
     
     @property
     def total_fee_percent(self) -> float:
@@ -114,6 +125,5 @@ class FarmingConfig:
         """Minimum funding rate needed to be profitable after fees"""
         return self.total_fee_percent + self.MIN_PROFIT_PERCENT
 
-
-# Create default config instance
-config = FarmingConfig()
+# Don't create global instance - let main.py create it after env vars are loaded
+# config = FarmingConfig()
