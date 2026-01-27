@@ -195,4 +195,11 @@ class TelegramNotifier:
 
 📅 {datetime.utcnow().strftime('%Y-%m-%d')}
 """
+    def notify_skipped(self, symbol: str, reason: str) -> bool:
+        """Notify about skipped opportunity"""
+        message = f"""
+🚫 <b>SKIPPED: {symbol}</b>
+
+Reason: {reason}
+"""
         return self.send_message(message.strip())

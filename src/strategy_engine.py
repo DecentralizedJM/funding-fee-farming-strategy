@@ -50,7 +50,27 @@ class StrategyEngine:
         # Pause state for telegram control
         self._paused = False
         
+        # Skip notification cache (symbol -> (reason, timestamp))
+        self._skip_notification_cache = {}
+        
         logger.info("Strategy engine initialized")
+    
+    def _notify_skip_throttled(self, symbol: str, reason: str) -> None:
+        """Send skip notification if not sent recently"""
+        now = datetime.now(timezone.utc)
+        last_entry = self._skip_notification_cache.get(symbol)
+        
+        should_send = True
+        if last_entry:
+            last_reason, last_time = last_entry
+            # Don't send if same reason and < 15 mins
+            if last_reason == reason and (now - last_time) < timedelta(minutes=15):
+                should_send = False
+        
+        if should_send:
+            self.notifier.notify_skipped(symbol, reason)
+            self._skip_notification_cache[symbol] = (reason, now)
+            logger.debug(f"Sent skip notification for {symbol}: {reason}")
     
     async def run(self) -> None:
         """Main strategy loop"""
@@ -170,7 +190,9 @@ class StrategyEngine:
                 p.symbol for p in self.position_manager.get_active_positions()
             }
             if opp["symbol"] in active_symbols:
-                logger.debug(f"Skipping {opp['symbol']}: Already have active position")
+                reason = "Already have active position"
+                logger.debug(f"Skipping {opp['symbol']}: {reason}")
+                self._notify_skip_throttled(opp["symbol"], reason)
                 continue
             
             # Check if in entry window
@@ -182,7 +204,10 @@ class StrategyEngine:
                 # Log why it wasn't in window
                 time_to_settlement = self.fetcher.get_time_to_next_settlement(opp["nextFundingTime"])
                 minutes_remaining = time_to_settlement.total_seconds() / 60
-                logger.debug(f"Skipping {opp['symbol']}: Outside entry window ({minutes_remaining:.1f}m until settlement, window: {self.config.ENTRY_MIN_MINUTES_BEFORE}-{self.config.ENTRY_MAX_MINUTES_BEFORE}m)")
+                
+                reason = f"Outside entry window ({minutes_remaining:.1f}m until settlement, window: {self.config.ENTRY_MIN_MINUTES_BEFORE}-{self.config.ENTRY_MAX_MINUTES_BEFORE}m)"
+                logger.debug(f"Skipping {opp['symbol']}: {reason}")
+                self._notify_skip_throttled(opp["symbol"], reason)
     
     def _is_in_entry_window(self, next_funding_time_ms: int) -> bool:
         """
