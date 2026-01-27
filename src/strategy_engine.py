@@ -170,6 +170,7 @@ class StrategyEngine:
                 p.symbol for p in self.position_manager.get_active_positions()
             }
             if opp["symbol"] in active_symbols:
+                logger.debug(f"Skipping {opp['symbol']}: Already have active position")
                 continue
             
             # Check if in entry window
@@ -177,6 +178,11 @@ class StrategyEngine:
                 success = await self._execute_entry(opp)
                 if success:
                     active_count += 1
+            else:
+                # Log why it wasn't in window
+                time_to_settlement = self.fetcher.get_time_to_next_settlement(opp["nextFundingTime"])
+                minutes_remaining = time_to_settlement.total_seconds() / 60
+                logger.debug(f"Skipping {opp['symbol']}: Outside entry window ({minutes_remaining:.1f}m until settlement, window: {self.config.ENTRY_MIN_MINUTES_BEFORE}-{self.config.ENTRY_MAX_MINUTES_BEFORE}m)")
     
     def _is_in_entry_window(self, next_funding_time_ms: int) -> bool:
         """
