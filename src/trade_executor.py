@@ -225,7 +225,8 @@ class TradeExecutor:
         symbol: str,
         side: str,
         quantity: str,
-        leverage: int
+        leverage: int,
+        stop_loss_price: Optional[str] = None
     ) -> TradeResult:
         """
         Open a market position for funding farming
@@ -235,11 +236,12 @@ class TradeExecutor:
             side: "LONG" or "SHORT"
             quantity: Position quantity
             leverage: Leverage to use
+            stop_loss_price: Stop loss price (optional)
         
         Returns:
             TradeResult with execution details
         """
-        logger.info(f"Opening {side} position: {symbol} qty={quantity} leverage={leverage}x")
+        logger.info(f"Opening {side} position: {symbol} qty={quantity} leverage={leverage}x SL={stop_loss_price}")
         
         if not self.client:
             return TradeResult(
@@ -256,7 +258,8 @@ class TradeExecutor:
                 symbol=symbol,
                 side=side,
                 quantity=quantity,
-                leverage=str(leverage)
+                leverage=str(leverage),
+                stoploss_price=stop_loss_price
             )
             
             if order:

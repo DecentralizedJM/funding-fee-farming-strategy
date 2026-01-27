@@ -145,6 +145,7 @@ class PositionManager:
         current_funding_rate: Optional[float] = None,
         min_profit_percent: float = 0.05,
         stop_loss_percent: float = 0.005,
+        soft_loss_percent: float = -0.002,
         trailing_stop_enabled: bool = True,
         trailing_activation_percent: float = 0.001,
         trailing_callback_percent: float = 0.0002,
@@ -158,7 +159,8 @@ class PositionManager:
             current_pnl: Current unrealized PnL
             current_funding_rate: Current funding rate (for reversal check)
             min_profit_percent: Minimum profit to exit
-            stop_loss_percent: Stop loss percentage
+            stop_loss_percent: Stop loss percentage (hard stop)
+            soft_loss_percent: Soft loss percentage (exit if funding received and PnL > this)
             max_hold_minutes: Maximum hold time after settlement
         
         Returns:
@@ -202,7 +204,16 @@ class PositionManager:
             total_pnl = current_pnl + estimated_funding
             profit_percent = (total_pnl / entry_value) if entry_value > 0 else 0
             
-            # --- 1. TRAILING STOP LOGIC ---
+            # --- NEW: IMMEDIATE EXIT (Aggressive Farming) ---
+            # 1. Any Profit? Exit immediately.
+            if profit_percent > 0:
+                return True, f"Immediate Profit Exit: {profit_percent*100:.3f}% > 0%"
+            
+            # 2. Soft Loss Exit? (Small loss covered by funding)
+            if profit_percent > soft_loss_percent:
+                return True, f"Soft Loss Exit: {profit_percent*100:.3f}% > {soft_loss_percent*100:.3f}%"
+            
+            # --- 1. TRAILING STOP LOGIC (Only if we haven't exited yet - e.g. huge gap down) ---
             if trailing_stop_enabled:
                 # Update highest PnL
                 if profit_percent > position.highest_pnl_percent:

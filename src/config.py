@@ -69,6 +69,15 @@ class FarmingConfig:
     # Maximum time to hold after settlement (force exit)
     MAX_HOLD_MINUTES_AFTER_SETTLEMENT: int = 30
     
+    # "Soft Loss" Exit: Exit immediately if PnL > -0.2% (Funding covers this)
+    SOFT_LOSS_EXIT_PERCENT: float = -0.002
+    
+    # ==========================================================================
+    # SAFETY CHECKS
+    # ==========================================================================
+    # Max allowed spread between Mark and Last price (1%)
+    PRICE_SPREAD_THRESHOLD: float = 0.01
+    
     # ==========================================================================
     # POSITION SIZING (TEST MODE)
     # ==========================================================================
@@ -79,10 +88,10 @@ class FarmingConfig:
     MIN_ORDER_VALUE_USD: float = 8.0
     
     # Use maximum leverage available for the asset
-    USE_MAX_LEVERAGE: bool = True
+    USE_MAX_LEVERAGE: bool = False
     
     # Fallback leverage if max not available
-    DEFAULT_LEVERAGE: int = 20
+    DEFAULT_LEVERAGE: int = 5
     
     # Maximum concurrent positions
     MAX_CONCURRENT_POSITIONS: int = 3

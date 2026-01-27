@@ -223,6 +223,19 @@ class StrategyEngine:
         if not self.executor.check_symbol_available(symbol):
             logger.warning(f"Symbol {symbol} not available on Mudrex - skipping")
             return False
+            
+        # --- SIDE CHECK (Safety Verification) ---
+        # Verify Mark Price vs Last Price spread
+        tickers = self.fetcher.get_tickers([symbol])
+        ticker_data = tickers.get(symbol, {})
+        mark_price = ticker_data.get("markPrice", price)
+        last_price = ticker_data.get("lastPrice", price)
+        
+        if last_price > 0:
+            spread_percent = abs(mark_price - last_price) / last_price
+            if spread_percent > self.config.PRICE_SPREAD_THRESHOLD:
+                logger.warning(f"Entry rejected: Price spread too high ({spread_percent*100:.2f}% > {self.config.PRICE_SPREAD_THRESHOLD*100:.2f}%) Mark: {mark_price}, Last: {last_price}")
+                return False
         
         # Notify opportunity
         self.notifier.notify_opportunity_detected(
@@ -253,13 +266,24 @@ class StrategyEngine:
         if not quantity:
             logger.error(f"Could not calculate position size for {symbol}")
             return False
-        
+
+        # Calculate Stop Loss Price
+        # Note: Mudrex API expects string
+        sl_price = None
+        if side == "LONG":
+            sl_price_val = price * (1 - self.config.STOP_LOSS_PERCENT)
+            sl_price = f"{sl_price_val:.4f}" # Precision might need checking, assuming 4 decimals safe-ish or auto-rounded by API
+        else:
+            sl_price_val = price * (1 + self.config.STOP_LOSS_PERCENT)
+            sl_price = f"{sl_price_val:.4f}"
+
         # Execute trade
         result = self.executor.open_position(
             symbol=symbol,
             side=side,
             quantity=quantity,
-            leverage=leverage
+            leverage=leverage,
+            stop_loss_price=sl_price
         )
         
         if result.success:
@@ -324,6 +348,7 @@ class StrategyEngine:
                     current_funding_rate=current_funding_rate,
                     min_profit_percent=self.config.MIN_PROFIT_PERCENT,
                     stop_loss_percent=self.config.STOP_LOSS_PERCENT,
+                    soft_loss_percent=self.config.SOFT_LOSS_EXIT_PERCENT,
                     trailing_stop_enabled=self.config.TRAILING_STOP_ENABLED,
                     trailing_activation_percent=self.config.TRAILING_ACTIVATION_PERCENT,
                     trailing_callback_percent=self.config.TRAILING_CALLBACK_PERCENT,
