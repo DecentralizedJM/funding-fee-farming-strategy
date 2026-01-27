@@ -320,6 +320,11 @@ class TradeExecutor:
             logger.info(f"Position {position_id} closed: {result}")
             return result
         except Exception as e:
+            error_msg = str(e).lower()
+            if "position is not open" in error_msg or "code: 400" in error_msg or "404" in error_msg:
+                logger.warning(f"Position {position_id} appears already closed ({e}). Marking as success.")
+                return True
+                
             logger.error(f"Error closing position {position_id}: {e}")
             return False
     
