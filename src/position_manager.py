@@ -194,7 +194,11 @@ class PositionManager:
             time_since = now - position.funding_settlement_time
             if time_since >= timedelta(seconds=30):
                 # Funding should be credited by now
-                self.mark_funding_received(position.position_id)
+                # Calculate estimated funding amount
+                entry_value = float(position.quantity) * position.entry_price
+                estimated_funding = entry_value * abs(position.expected_funding_rate)
+                
+                self.mark_funding_received(position.position_id, funding_amount=estimated_funding)
         
         # Exit conditions after funding received
         if position.funding_received:
