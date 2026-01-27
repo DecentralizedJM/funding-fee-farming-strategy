@@ -191,7 +191,7 @@ class StrategyEngine:
             }
             if opp["symbol"] in active_symbols:
                 reason = "Already have active position"
-                logger.debug(f"Skipping {opp['symbol']}: {reason}")
+                logger.info(f"Skipping {opp['symbol']}: {reason}")
                 self._notify_skip_throttled(opp["symbol"], reason)
                 continue
             
@@ -206,7 +206,7 @@ class StrategyEngine:
                 minutes_remaining = time_to_settlement.total_seconds() / 60
                 
                 reason = f"Outside entry window ({minutes_remaining:.1f}m until settlement, window: {self.config.ENTRY_MIN_MINUTES_BEFORE}-{self.config.ENTRY_MAX_MINUTES_BEFORE}m)"
-                logger.debug(f"Skipping {opp['symbol']}: {reason}")
+                logger.info(f"Skipping {opp['symbol']}: {reason}")
                 self._notify_skip_throttled(opp["symbol"], reason)
     
     def _is_in_entry_window(self, next_funding_time_ms: int) -> bool:
