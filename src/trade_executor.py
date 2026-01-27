@@ -377,5 +377,11 @@ class TradeExecutor:
             position = self.client.positions.get(position_id)
             return float(position.unrealized_pnl) if position else None
         except Exception as e:
+            error_msg = str(e).lower()
+            if "404" in error_msg or "not found" in error_msg:
+                # Common case for closed/liquidated positions
+                logger.warning(f"Position {position_id} PnL not found (404). Assuming closed: {e}")
+                return None
+            
             logger.error(f"Error getting position PnL: {e}")
             return None
