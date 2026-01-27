@@ -283,14 +283,27 @@ class PositionManager:
         """
         position = self.positions.get(position_id)
         if not position:
-            logger.warning(f"Position {position_id} not found")
+            logger.warning(f"Position {position_id} not found in local state")
             return False
         
-        # Get current PnL before closing
+        # Get current PnL before closing (snapshot)
         current_pnl = self.executor.get_position_pnl(position_id) or 0.0
         
-        # Close the position
+        # Close the position via API
         success = self.executor.close_position(position_id)
+        
+        # --- ERROR HANDLING: Check for "Position Not Open" / 404 ---
+        if not success:
+            logger.warning(f"Close failed for {position_id}. Verifying if position still exists...")
+            # Double check if position is actually open on exchange
+            open_positions = self.executor.get_open_positions()
+            is_open_on_exchange = any(p["position_id"] == position_id for p in open_positions)
+            
+            if not is_open_on_exchange:
+                logger.warning(f"Position {position_id} not found on exchange. Assuming closed externally/liquidated.")
+                # Force success to clear local state
+                success = True
+                reason = f"{reason} (Force Close: Not found on exchange)"
         
         if success:
             # Update position record

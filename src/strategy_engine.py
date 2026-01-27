@@ -333,7 +333,23 @@ class StrategyEngine:
         for position in positions:
             try:
                 # Get current PnL
-                current_pnl = self.executor.get_position_pnl(position.position_id) or 0.0
+                current_pnl = self.executor.get_position_pnl(position.position_id)
+                
+                # If PnL fetch failed (None), check if position still exists
+                if current_pnl is None:
+                    logger.warning(f"Could not fetch PnL for {position.position_id}. strict-checking existence...")
+                    open_positions = self.executor.get_open_positions()
+                    is_open = any(p["position_id"] == position.position_id for p in open_positions)
+                    
+                    if not is_open:
+                        logger.warning(f"Position {position.position_id} confirmed missing. Closing locally.")
+                        self.position_manager.execute_exit(
+                            position_id=position.position_id,
+                            reason="Force Close: Missing on exchange"
+                        )
+                        continue
+                    else:
+                        current_pnl = 0.0 # Default to 0 if temporary API error but position exists
                 
                 # Get current market data
                 tickers = self.fetcher.get_tickers([position.symbol])
