@@ -66,10 +66,11 @@ class FarmingConfig:
     # Minimum profit percentage to exit (after fees)
     MIN_PROFIT_PERCENT: float = 0.05  # 0.05%
     
-    # Safety cap: force exit if still open this long after settlement (we exit right after settlement regardless of PnL)
+    # Safety cap: force exit if still open this long after settlement
     MAX_HOLD_MINUTES_AFTER_SETTLEMENT: int = 5
     
-    # "Soft Loss" Exit: Exit immediately if PnL > -0.2% (Funding covers this)
+    # "Soft Loss" Exit: Exit if loss is small (second ideal - avoids larger losses)
+    # Exit if total PnL (including funding) > this threshold (e.g. -0.2% = small loss)
     SOFT_LOSS_EXIT_PERCENT: float = -0.002
     
     # ==========================================================================

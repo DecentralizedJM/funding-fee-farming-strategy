@@ -151,16 +151,22 @@ class PositionManager:
         max_hold_minutes: int = 30
     ) -> Tuple[bool, str]:
         """
-        Determine if position should exit
+        Determine if position should exit.
+        
+        Exit priority after funding settlement:
+        1. IDEAL: Exit if in profit (any profit > 0%)
+        2. SECOND IDEAL: Exit if small loss (above soft_loss_percent threshold)
+        3. Safety: Hard stop loss (always active, prevents liquidation)
+        4. Safety: Max hold time limit
         
         Args:
             position: The position to check
             current_pnl: Current unrealized PnL
             current_funding_rate: Current funding rate (for reversal check)
-            min_profit_percent: Minimum profit to exit
-            stop_loss_percent: Stop loss percentage (hard stop)
-            soft_loss_percent: Soft loss percentage (exit if funding received and PnL > this)
-            max_hold_minutes: Maximum hold time after settlement
+            min_profit_percent: Minimum profit to exit (not used in current logic)
+            stop_loss_percent: Stop loss percentage (hard stop - prevents liquidation)
+            soft_loss_percent: Soft loss threshold (exit if total PnL > this after funding)
+            max_hold_minutes: Maximum hold time after settlement (safety cap)
         
         Returns:
             Tuple of (should_exit, reason)
@@ -199,9 +205,28 @@ class PositionManager:
                 # Safety: exit anyway if we're past settlement and past max hold
                 return True, "Exit after settlement (max hold)"
 
-        # Exit immediately after settlement (don't wait for profit/loss)
+        # Exit strategy after funding received: prioritize profit, then small loss
         if position.funding_received:
-            return True, "Exit after settlement"
+            entry_value = float(position.quantity) * position.entry_price
+            estimated_funding = entry_value * abs(position.expected_funding_rate)
+            total_pnl = current_pnl + estimated_funding
+            profit_percent = (total_pnl / entry_value) if entry_value > 0 else 0
+
+            time_since_settlement = position.time_since_settlement or timedelta(seconds=0)
+            minutes_held = time_since_settlement.total_seconds() / 60
+
+            # IDEAL: Exit if in profit (any profit is good)
+            if profit_percent > 0:
+                return True, f"Profit Exit: {profit_percent*100:.3f}% > 0%"
+
+            # SECOND IDEAL: Exit if loss is small (soft loss threshold)
+            # This prevents holding through larger losses while still giving chance for recovery
+            if profit_percent > soft_loss_percent:
+                return True, f"Small Loss Exit: {profit_percent*100:.3f}% > {soft_loss_percent*100:.3f}%"
+
+            # Safety: Hard time limit (avoid holding too long)
+            if minutes_held >= max_hold_minutes:
+                return True, f"Max hold time exceeded: {minutes_held:.1f}m"
 
         return False, "Holding"
     

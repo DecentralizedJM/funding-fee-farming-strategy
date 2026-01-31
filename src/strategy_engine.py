@@ -311,8 +311,9 @@ class StrategyEngine:
             logger.error(f"Could not calculate position size for {symbol}")
             return False
 
-        # Calculate Stop Loss Price
+        # Calculate Stop Loss Price (critical for avoiding liquidation with high leverage)
         # Note: Mudrex API expects string
+        # Stop loss protects against large losses - with 10x leverage, 0.5% price move = 5% margin loss
         sl_price = None
         if side == "LONG":
             sl_price_val = price * (1 - self.config.STOP_LOSS_PERCENT)
