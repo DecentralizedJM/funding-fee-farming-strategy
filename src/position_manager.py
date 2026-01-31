@@ -37,7 +37,6 @@ class FarmingPosition:
     exit_time: Optional[datetime] = None
     exit_price: Optional[float] = None
     exit_reason: Optional[str] = None
-    exit_reason: Optional[str] = None
     realized_pnl: Optional[float] = None
     
     # Smart Exit State
@@ -189,83 +188,21 @@ class PositionManager:
         if now < position.funding_settlement_time:
             return False, "Waiting for settlement"
         
-        # Mark funding as received if just passed settlement
+        # Mark funding as received if just passed settlement (30s buffer for credit)
         if not position.funding_received:
             time_since = now - position.funding_settlement_time
             if time_since >= timedelta(seconds=30):
-                # Funding should be credited by now
-                # Calculate estimated funding amount
                 entry_value = float(position.quantity) * position.entry_price
                 estimated_funding = entry_value * abs(position.expected_funding_rate)
-                
                 self.mark_funding_received(position.position_id, funding_amount=estimated_funding)
-        
-        # Exit conditions after funding received
+            elif time_since >= timedelta(minutes=max_hold_minutes):
+                # Safety: exit anyway if we're past settlement and past max hold
+                return True, "Exit after settlement (max hold)"
+
+        # Exit immediately after settlement (don't wait for profit/loss)
         if position.funding_received:
-            # Calculate profit including estimated funding
-            entry_value = float(position.quantity) * position.entry_price
-            estimated_funding = entry_value * abs(position.expected_funding_rate)
-            total_pnl = current_pnl + estimated_funding
-            profit_percent = (total_pnl / entry_value) if entry_value > 0 else 0
-            
-            # --- NEW: IMMEDIATE EXIT (Aggressive Farming) ---
-            # 1. Any Profit? Exit immediately.
-            if profit_percent > 0:
-                return True, f"Immediate Profit Exit: {profit_percent*100:.3f}% > 0%"
-            
-            # 2. Soft Loss Exit? (Small loss covered by funding)
-            if profit_percent > soft_loss_percent:
-                return True, f"Soft Loss Exit: {profit_percent*100:.3f}% > {soft_loss_percent*100:.3f}%"
-            
-            # --- 1. TRAILING STOP LOGIC (Only if we haven't exited yet - e.g. huge gap down) ---
-            if trailing_stop_enabled:
-                # Update highest PnL
-                if profit_percent > position.highest_pnl_percent:
-                    position.highest_pnl_percent = profit_percent
-                    # Save state occasionally if new high? (Maybe too much IO)
-                
-                # Check activation
-                if position.highest_pnl_percent >= trailing_activation_percent:
-                    drawdown = position.highest_pnl_percent - profit_percent
-                    if drawdown >= trailing_callback_percent:
-                        return True, f"Trailing Stop: Dropped {drawdown*100:.3f}% from peak {position.highest_pnl_percent*100:.3f}%"
-            
-            # --- 2. DYNAMIC TIME-DECAYED TARGETS ---
-            time_since_settlement = position.time_since_settlement
-            if not time_since_settlement:
-                time_since_settlement = timedelta(seconds=0)
-            
-            minutes_held = time_since_settlement.total_seconds() / 60
-            
-            # Determine dynamic target based on time held
-            dynamic_target = min_profit_percent
-            
-            if minutes_held > 10:
-                dynamic_target = min_profit_percent * 0.4  # Reduce target by 60% (e.g., 0.05% -> 0.02%)
-            if minutes_held > 20:
-                dynamic_target = 0.0  # Just break even
-            
-            # Check dynamic target
-            if profit_percent >= dynamic_target:
-                 # If we are using trailing stop and haven't hit activation yet, 
-                 # we might want to wait? -> No, dynamic target is "minimum acceptable"
-                 # But if we are clearly shooting up, trailing stop handles it.
-                 # Logic: If profit > activation, let trailing stop handle it.
-                 #        If profit < activation but > dynamic_target, take it.
-                 
-                 if trailing_stop_enabled and profit_percent >= trailing_activation_percent:
-                     pass # Let trailing stop handle it (let it run)
-                 else:
-                     return True, f"Target Reached ({minutes_held:.1f}m held): {profit_percent*100:.3f}% >= {dynamic_target*100:.3f}%"
-            
-            # --- 3. HARD TIME LIMIT ---
-            if minutes_held >= max_hold_minutes:
-                return True, f"Max hold time exceeded: {minutes_held:.1f}m"
-            
-            # --- 4. STOP LOSS (Already checked above, but good as fallback) ---
-            if current_pnl < -estimated_funding * 2:
-                return True, f"Stop loss triggered: PnL ${current_pnl:.4f}"
-        
+            return True, "Exit after settlement"
+
         return False, "Holding"
     
     def execute_exit(

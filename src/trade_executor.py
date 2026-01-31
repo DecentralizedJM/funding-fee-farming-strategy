@@ -161,40 +161,36 @@ class TradeExecutor:
         symbol: str,
         price: float,
         leverage: int,
+        margin_usd: float = 2.0,
         min_order_value_usd: float = 8.0
     ) -> Optional[str]:
         """
-        Calculate minimum position size for the given parameters
-        
+        Calculate position size from fixed margin and leverage.
+        Position value = margin_usd * leverage, then quantity = position_value / price.
+
         Args:
             symbol: Trading symbol
             price: Current price
             leverage: Leverage to use
-            min_order_value_usd: Minimum order value in USD
-        
+            margin_usd: Fixed margin in USD per position
+            min_order_value_usd: Minimum order value for exchange min quantity fallback
+
         Returns:
             Quantity string or None
         """
         try:
             asset_info = self.get_asset_info(symbol)
-            
+
             if asset_info and asset_info.get("min_quantity"):
                 min_qty = float(asset_info["min_quantity"])
                 qty_step = float(asset_info.get("quantity_step", min_qty))
             else:
-                # Fallback: calculate from min order value
                 min_qty = min_order_value_usd / price
                 qty_step = 0.001
-            
-            # Calculate quantity for minimum order value check
-            # We want Position Value ≈ min_order_value_usd (not Margin)
-            # This ensures we satisfy the exchange's minimum order size without over-committing capital
-            
-            # Old incorrect logic: target_margin = min_order_value
-            # New logic: target_position_value = min_order_value
-            
-            target_value = min_order_value_usd
-            quantity = target_value / price
+
+            # Position value = margin * leverage (not margin alone)
+            position_value = margin_usd * leverage
+            quantity = position_value / price
             
             # Round to nearest step
             if qty_step > 0:

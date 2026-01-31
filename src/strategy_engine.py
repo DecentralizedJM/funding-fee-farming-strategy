@@ -192,22 +192,28 @@ class StrategyEngine:
             if opp["symbol"] in active_symbols:
                 reason = "Already have active position"
                 logger.info(f"Skipping {opp['symbol']}: {reason}")
-                self._notify_skip_throttled(opp["symbol"], reason)
+                if self.config.NOTIFY_SKIPS:
+                    self._notify_skip_throttled(opp["symbol"], reason)
                 continue
-            
+
+            # Volume filter: skip low liquidity to avoid slippage
+            volume_24h = opp.get("volume24h", 0) or 0
+            if volume_24h < self.config.MIN_VOLUME_24H:
+                logger.debug(f"Skipping {opp['symbol']}: volume ${volume_24h:,.0f} < ${self.config.MIN_VOLUME_24H:,.0f}")
+                continue
+
             # Check if in entry window
             if self._is_in_entry_window(opp["nextFundingTime"]):
                 success = await self._execute_entry(opp)
                 if success:
                     active_count += 1
             else:
-                # Log why it wasn't in window
                 time_to_settlement = self.fetcher.get_time_to_next_settlement(opp["nextFundingTime"])
                 minutes_remaining = time_to_settlement.total_seconds() / 60
-                
                 reason = f"Outside entry window ({minutes_remaining:.1f}m until settlement, window: {self.config.ENTRY_MIN_MINUTES_BEFORE}-{self.config.ENTRY_MAX_MINUTES_BEFORE}m)"
                 logger.info(f"Skipping {opp['symbol']}: {reason}")
-                self._notify_skip_throttled(opp["symbol"], reason)
+                if self.config.NOTIFY_SKIPS:
+                    self._notify_skip_throttled(opp["symbol"], reason)
     
     def _is_in_entry_window(self, next_funding_time_ms: int) -> bool:
         """
@@ -280,17 +286,24 @@ class StrategyEngine:
         # Get asset info for leverage and sizing
         instrument_info = self.fetcher.get_instrument_info(symbol)
         
-        # Determine leverage
-        if self.config.USE_MAX_LEVERAGE and instrument_info:
-            leverage = int(instrument_info.get("maxLeverage", self.config.DEFAULT_LEVERAGE))
+        # Dynamic leverage: 10x for rate > 1%, 7x for rate > 0.75%, else 5x (clamped to MIN/MAX)
+        abs_rate = abs(funding_rate)
+        if abs_rate >= 0.01:  # 1%
+            leverage = self.config.MAX_LEVERAGE
+        elif abs_rate >= 0.0075:  # 0.75%
+            leverage = max(self.config.MIN_LEVERAGE, min(7, self.config.MAX_LEVERAGE))
         else:
-            leverage = self.config.DEFAULT_LEVERAGE
+            leverage = self.config.MIN_LEVERAGE
+        if instrument_info:
+            max_asset = int(instrument_info.get("maxLeverage", 100))
+            leverage = min(leverage, max_asset)
         
-        # Calculate position size (minimum margin)
+        # Calculate position size from fixed margin
         quantity = self.executor.calculate_position_size(
             symbol=symbol,
             price=price,
             leverage=leverage,
+            margin_usd=self.config.MARGIN_USD,
             min_order_value_usd=self.config.MIN_ORDER_VALUE_USD
         )
         
@@ -445,8 +458,8 @@ class StrategyEngine:
 <b>Threshold:</b> {self.config.EXTREME_RATE_THRESHOLD * 100:.2f}%
 <b>Entry Window:</b> {self.config.ENTRY_MIN_MINUTES_BEFORE}-{self.config.ENTRY_MAX_MINUTES_BEFORE} mins
 <b>Max Positions:</b> {self.config.MAX_CONCURRENT_POSITIONS}
-<b>Min Order:</b> ${self.config.MIN_ORDER_VALUE_USD}
-<b>Max Leverage:</b> {'Auto (Max)' if self.config.USE_MAX_LEVERAGE else self.config.DEFAULT_LEVERAGE}
+<b>Margin:</b> ${self.config.MARGIN_USD}
+<b>Leverage:</b> {self.config.MIN_LEVERAGE}-{self.config.MAX_LEVERAGE}x (dynamic)
 """
         self.notifier.notify_startup(config_summary.strip())
     
