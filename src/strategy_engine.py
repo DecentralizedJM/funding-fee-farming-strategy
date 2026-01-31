@@ -53,6 +53,10 @@ class StrategyEngine:
         # Skip notification cache (symbol -> (reason, timestamp))
         self._skip_notification_cache = {}
         
+        # Position reconciliation tracking
+        self._last_reconciliation = None
+        self._reconciliation_interval = timedelta(minutes=5)
+        
         logger.info("Strategy engine initialized")
     
     def _notify_skip_throttled(self, symbol: str, reason: str) -> None:
@@ -91,6 +95,9 @@ class StrategyEngine:
             try:
                 # Check for daily summary (at midnight UTC)
                 await self._check_daily_summary()
+                
+                # Periodic position reconciliation with exchange
+                await self._reconcile_positions()
                 
                 # Scan for opportunities and enter if appropriate
                 await self.scan_and_enter()
@@ -134,6 +141,49 @@ class StrategyEngine:
         self._daily_trades += 1
         self._daily_pnl += pnl
         self._daily_funding += funding
+    
+    async def _reconcile_positions(self) -> None:
+        """
+        Periodically reconcile local positions with exchange.
+        Detects liquidated/closed positions and cleans up local state.
+        """
+        now = datetime.now(timezone.utc)
+        
+        # Only run every 5 minutes
+        if self._last_reconciliation:
+            if now - self._last_reconciliation < self._reconciliation_interval:
+                return
+        
+        self._last_reconciliation = now
+        
+        local_positions = self.position_manager.get_active_positions()
+        if not local_positions:
+            return
+        
+        try:
+            exchange_positions = self.executor.get_open_positions()
+            exchange_position_ids = {p["position_id"] for p in exchange_positions}
+            
+            for position in local_positions:
+                if position.position_id not in exchange_position_ids:
+                    # Position exists locally but not on exchange - likely liquidated/closed
+                    logger.warning(f"Reconciliation: Position {position.position_id} ({position.symbol}) not found on exchange. Cleaning up.")
+                    
+                    self.position_manager.execute_exit(
+                        position_id=position.position_id,
+                        reason="Reconciliation: Position closed/liquidated on exchange"
+                    )
+                    
+                    # Notify about the discrepancy
+                    self.notifier.notify_error(
+                        "Position Reconciliation",
+                        f"{position.symbol} position was closed/liquidated externally"
+                    )
+            
+            logger.debug(f"Position reconciliation complete: {len(local_positions)} local, {len(exchange_positions)} on exchange")
+            
+        except Exception as e:
+            logger.error(f"Error during position reconciliation: {e}")
     
     def pause(self) -> None:
         """Pause the strategy (stop entering new positions)"""
@@ -182,7 +232,11 @@ class StrategyEngine:
         
         # Filter to entry window and execute
         for opp in opportunities:
+            # Bug #6 fix: Re-fetch active count before each entry (not just once at start)
+            # Between async entries, the actual count might have changed
+            active_count = self.position_manager.get_active_count()
             if active_count >= self.config.MAX_CONCURRENT_POSITIONS:
+                logger.debug(f"Max positions reached ({active_count}/{self.config.MAX_CONCURRENT_POSITIONS})")
                 break
             
             # Skip if we already have a position for this symbol
@@ -204,9 +258,7 @@ class StrategyEngine:
 
             # Check if in entry window
             if self._is_in_entry_window(opp["nextFundingTime"]):
-                success = await self._execute_entry(opp)
-                if success:
-                    active_count += 1
+                await self._execute_entry(opp)
             else:
                 time_to_settlement = self.fetcher.get_time_to_next_settlement(opp["nextFundingTime"])
                 minutes_remaining = time_to_settlement.total_seconds() / 60
@@ -312,15 +364,26 @@ class StrategyEngine:
             return False
 
         # Calculate Stop Loss Price (critical for avoiding liquidation with high leverage)
-        # Note: Mudrex API expects string
-        # Stop loss protects against large losses - with 10x leverage, 0.5% price move = 5% margin loss
+        # Note: Exchange stop loss is price-based. Convert margin-based stop loss to price move.
+        # With leverage, STOP_LOSS_PERCENT of margin = STOP_LOSS_PERCENT/leverage of price
+        price_stop_percent = self.config.STOP_LOSS_PERCENT / leverage
         sl_price = None
         if side == "LONG":
-            sl_price_val = price * (1 - self.config.STOP_LOSS_PERCENT)
-            sl_price = f"{sl_price_val:.4f}" # Precision might need checking, assuming 4 decimals safe-ish or auto-rounded by API
-        else:
-            sl_price_val = price * (1 + self.config.STOP_LOSS_PERCENT)
+            sl_price_val = price * (1 - price_stop_percent)
             sl_price = f"{sl_price_val:.4f}"
+        else:
+            sl_price_val = price * (1 + price_stop_percent)
+            sl_price = f"{sl_price_val:.4f}"
+
+        # Bug #4 fix: Re-check timing before placing order (execution can take 10-30s)
+        # If we're no longer in the entry window, abort to avoid missing settlement
+        time_to_settlement = self.fetcher.get_time_to_next_settlement(next_funding_time)
+        seconds_remaining = time_to_settlement.total_seconds()
+        min_seconds = self.config.ENTRY_MIN_MINUTES_BEFORE * 60
+        
+        if seconds_remaining < min_seconds:
+            logger.warning(f"Entry aborted: Only {seconds_remaining:.0f}s until settlement (min: {min_seconds:.0f}s). Would miss funding.")
+            return False
 
         # Execute trade
         result = self.executor.open_position(
@@ -351,18 +414,35 @@ class StrategyEngine:
             
             self.position_manager.add_position(position)
             
+            # Slippage check: verify execution price is within acceptable range
+            actual_entry = result.entry_price or price
+            slippage = abs(actual_entry - price) / price if price > 0 else 0
+            
+            if slippage > self.config.MAX_SLIPPAGE_PERCENT:
+                logger.error(f"Excessive slippage on {symbol}: {slippage*100:.3f}% > {self.config.MAX_SLIPPAGE_PERCENT*100:.3f}%. Closing position immediately.")
+                self.position_manager.execute_exit(
+                    position_id=result.position_id,
+                    reason=f"Excessive slippage: {slippage*100:.3f}%",
+                    exit_price=actual_entry
+                )
+                self.notifier.notify_error(
+                    "Slippage Protection",
+                    f"{symbol}: Entry slippage {slippage*100:.3f}% exceeded max {self.config.MAX_SLIPPAGE_PERCENT*100:.3f}%. Position closed."
+                )
+                return False
+            
             # Notify entry
             self.notifier.notify_entry(
                 symbol=symbol,
                 side=side,
                 quantity=quantity,
-                entry_price=result.entry_price or price,
+                entry_price=actual_entry,
                 leverage=leverage,
                 expected_funding_rate=funding_rate,
                 position_id=result.position_id
             )
             
-            logger.info(f"Entry successful: {symbol} {side} qty={quantity} leverage={leverage}x")
+            logger.info(f"Entry successful: {symbol} {side} qty={quantity} leverage={leverage}x slippage={slippage*100:.3f}%")
             return True
         else:
             logger.error(f"Entry failed: {result.error}")
@@ -401,6 +481,37 @@ class StrategyEngine:
                 ticker_data = tickers.get(position.symbol, {})
                 exit_price = ticker_data.get("lastPrice", position.entry_price)
                 current_funding_rate = ticker_data.get("fundingRate")
+                
+                # Verify funding was actually received (not just assume after 30s)
+                now = datetime.now(timezone.utc)
+                if not position.funding_received and now > position.funding_settlement_time:
+                    time_since = now - position.funding_settlement_time
+                    if time_since >= timedelta(seconds=30):
+                        # Verify with API instead of assuming
+                        settlement_ms = int(position.funding_settlement_time.timestamp() * 1000)
+                        verification = self.fetcher.verify_funding_settlement(
+                            position.symbol, settlement_ms
+                        )
+                        
+                        if verification and verification.get("verified"):
+                            # Use actual funding rate from API
+                            actual_rate = verification["fundingRate"]
+                            entry_value = float(position.quantity) * position.entry_price
+                            actual_funding = entry_value * abs(actual_rate)
+                            self.position_manager.mark_funding_received(
+                                position.position_id, 
+                                funding_amount=actual_funding
+                            )
+                            logger.info(f"Verified funding for {position.symbol}: actual rate={actual_rate*100:.4f}%, amount=${actual_funding:.4f}")
+                        else:
+                            # Fall back to estimated if API verification fails
+                            entry_value = float(position.quantity) * position.entry_price
+                            estimated_funding = entry_value * abs(position.expected_funding_rate)
+                            self.position_manager.mark_funding_received(
+                                position.position_id,
+                                funding_amount=estimated_funding
+                            )
+                            logger.warning(f"Could not verify funding for {position.symbol}, using estimate: ${estimated_funding:.4f}")
                 
                 # Check exit conditions
                 should_exit, reason = self.position_manager.should_exit(

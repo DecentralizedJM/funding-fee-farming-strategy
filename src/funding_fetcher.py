@@ -239,6 +239,41 @@ class FundingDataFetcher:
             logger.error(f"Unexpected error fetching funding history: {e}")
             return []
     
+    def verify_funding_settlement(self, symbol: str, expected_settlement_time_ms: int) -> Optional[Dict]:
+        """
+        Verify that a funding settlement occurred at the expected time.
+        
+        Args:
+            symbol: Symbol name
+            expected_settlement_time_ms: Expected settlement timestamp in milliseconds
+        
+        Returns:
+            Dict with actual funding rate if verified, None if not found
+        """
+        try:
+            history = self.get_funding_rate_history(symbol, limit=5)
+            if not history:
+                return None
+            
+            # Find the funding record closest to expected time (within 5 minute tolerance)
+            tolerance_ms = 5 * 60 * 1000  # 5 minutes
+            for record in history:
+                timestamp = record.get("fundingRateTimestamp", 0)
+                if abs(timestamp - expected_settlement_time_ms) <= tolerance_ms:
+                    logger.info(f"Verified funding settlement for {symbol}: rate={record['fundingRate']*100:.4f}%")
+                    return {
+                        "verified": True,
+                        "fundingRate": record["fundingRate"],
+                        "timestamp": timestamp
+                    }
+            
+            logger.warning(f"Could not verify funding settlement for {symbol} at {expected_settlement_time_ms}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error verifying funding settlement: {e}")
+            return None
+    
     def get_instrument_info(self, symbol: str) -> Optional[Dict]:
         """
         Get instrument details including min order size and max leverage

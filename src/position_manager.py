@@ -173,47 +173,54 @@ class PositionManager:
         """
         now = datetime.now(timezone.utc)
         
-        # Check Stop Loss (Always active)
+        # Check Stop Loss (Always active) - Bug #3 fix: use margin, not notional
         entry_value = float(position.quantity) * position.entry_price
-        if entry_value > 0:
-            current_pnl_percent = current_pnl / entry_value
-            if current_pnl_percent <= -stop_loss_percent:
-                return True, f"Stop loss triggered: {current_pnl_percent*100:.2f}% <= -{stop_loss_percent*100:.2f}%"
+        margin = entry_value / position.leverage if position.leverage > 0 else entry_value
+        if margin > 0:
+            # Calculate loss as percentage of margin at risk (not notional value)
+            # With 10x leverage, $0.10 loss on $2 margin = 5% margin loss
+            pnl_percent_of_margin = current_pnl / margin
+            if pnl_percent_of_margin <= -stop_loss_percent:
+                return True, f"Stop loss triggered: {pnl_percent_of_margin*100:.2f}% of margin <= -{stop_loss_percent*100:.2f}%"
         
         # Check Funding Rate Reversal (Always active)
-        # If rate flips against us, we should exit to avoid paying fees
+        # Bug #5 fix: Use relative threshold instead of absolute 0.01%
+        # Only exit if rate truly reversed (crossed zero) by significant amount
         if current_funding_rate is not None:
-            # Long position: paying if rate > 0
-            if position.side == "LONG" and current_funding_rate > 0.0001:  # Small buffer
-                return True, f"Funding rate reversal: {current_funding_rate*100:.4f}% (Longs pay)"
-            # Short position: paying if rate < 0
-            if position.side == "SHORT" and current_funding_rate < -0.0001:  # Small buffer
-                return True, f"Funding rate reversal: {current_funding_rate*100:.4f}% (Shorts pay)"
+            original_rate = position.expected_funding_rate
+            # Minimum threshold: rate must exceed 0.1% OR 50% of original rate magnitude
+            min_reversal = max(0.001, abs(original_rate) * 0.5)
+            
+            # Long position: was receiving (rate < 0), now paying if rate > threshold
+            if position.side == "LONG" and current_funding_rate > min_reversal:
+                return True, f"Funding rate reversal: {current_funding_rate*100:.4f}% (was {original_rate*100:.4f}%, Longs now pay)"
+            # Short position: was receiving (rate > 0), now paying if rate < -threshold
+            if position.side == "SHORT" and current_funding_rate < -min_reversal:
+                return True, f"Funding rate reversal: {current_funding_rate*100:.4f}% (was {original_rate*100:.4f}%, Shorts now pay)"
         
         # Check if settlement has occurred
         if now < position.funding_settlement_time:
             return False, "Waiting for settlement"
         
-        # Mark funding as received if just passed settlement (30s buffer for credit)
-        if not position.funding_received:
-            time_since = now - position.funding_settlement_time
-            if time_since >= timedelta(seconds=30):
-                entry_value = float(position.quantity) * position.entry_price
-                estimated_funding = entry_value * abs(position.expected_funding_rate)
-                self.mark_funding_received(position.position_id, funding_amount=estimated_funding)
-            elif time_since >= timedelta(minutes=max_hold_minutes):
-                # Safety: exit anyway if we're past settlement and past max hold
-                return True, "Exit after settlement (max hold)"
+        # Calculate time since settlement (used in multiple places)
+        time_since_settlement = position.time_since_settlement or timedelta(seconds=0)
+        minutes_held = time_since_settlement.total_seconds() / 60
+        
+        # Note: Funding verification is now handled by strategy_engine (with API verification)
+        # This function just checks the funding_received flag that strategy_engine sets
+
+        # Safety: Hard time limit (always check, regardless of funding status)
+        # This was Bug #1 - previously inside funding_received block making it impossible
+        if minutes_held >= max_hold_minutes:
+            return True, f"Max hold time exceeded: {minutes_held:.1f}m"
 
         # Exit strategy after funding received: prioritize profit, then small loss
         if position.funding_received:
             entry_value = float(position.quantity) * position.entry_price
-            estimated_funding = entry_value * abs(position.expected_funding_rate)
-            total_pnl = current_pnl + estimated_funding
+            # Use actual funding_amount (not estimated) - fixes Bug #2 double-counting
+            funding_amount = position.funding_amount
+            total_pnl = current_pnl + funding_amount
             profit_percent = (total_pnl / entry_value) if entry_value > 0 else 0
-
-            time_since_settlement = position.time_since_settlement or timedelta(seconds=0)
-            minutes_held = time_since_settlement.total_seconds() / 60
 
             # IDEAL: Exit if in profit (any profit is good)
             if profit_percent > 0:
@@ -223,10 +230,6 @@ class PositionManager:
             # This prevents holding through larger losses while still giving chance for recovery
             if profit_percent > soft_loss_percent:
                 return True, f"Small Loss Exit: {profit_percent*100:.3f}% > {soft_loss_percent*100:.3f}%"
-
-            # Safety: Hard time limit (avoid holding too long)
-            if minutes_held >= max_hold_minutes:
-                return True, f"Max hold time exceeded: {minutes_held:.1f}m"
 
         return False, "Holding"
     

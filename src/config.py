@@ -45,8 +45,10 @@ class FarmingConfig:
     # ==========================================================================
     # RISK MANAGEMENT
     # ==========================================================================
-    # Stop loss percentage (e.g. 0.005 = 0.5%)
-    STOP_LOSS_PERCENT: float = 0.005
+    # Stop loss percentage of MARGIN (not notional) - e.g. 0.05 = 5% of margin at risk
+    # With $2 margin, 5% stop loss = $0.10 max loss before exit
+    # Previously was 0.5% of notional which was 10x too tight with leverage
+    STOP_LOSS_PERCENT: float = 0.05
     
     # Maximum daily loss in USD
     MAX_DAILY_LOSS_USD: float = 10.0
@@ -78,6 +80,10 @@ class FarmingConfig:
     # ==========================================================================
     # Max allowed spread between Mark and Last price (1%)
     PRICE_SPREAD_THRESHOLD: float = 0.01
+    
+    # Max acceptable slippage on entry (0.3% = 0.003)
+    # If execution price differs from expected by more than this, close immediately
+    MAX_SLIPPAGE_PERCENT: float = 0.003
     
     # ==========================================================================
     # POSITION SIZING
