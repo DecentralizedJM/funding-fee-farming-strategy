@@ -32,7 +32,8 @@ Perpetual futures contracts use **funding rates** to keep the contract price ali
 1. **Detect** extreme funding rates across all trading pairs
 2. **Enter** 30-60 seconds before settlement to minimize price exposure
 3. **Receive** funding fees at settlement
-4. **Exit** immediately after funding is verified with profit
+4. **Reverse** position immediately after settlement (close original, open opposite)
+5. **Exit** reversed position when profit target reached or max hold time
 
 ---
 
@@ -64,7 +65,7 @@ Example with $2 margin and 10x leverage:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                      FUNDING FEE FARMING BOT v2.0                           │
+│                      FUNDING FEE FARMING BOT v3.0                           │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
@@ -132,7 +133,7 @@ Example with $2 margin and 10x leverage:
 
 ## Strategy Logic
 
-### Entry Flow (Improved v2.0)
+### Entry Flow
 
 ```mermaid
 flowchart TD
@@ -156,38 +157,76 @@ flowchart TD
     N --> O[Send Telegram Alert]
 ```
 
-### Exit Flow (Improved v2.0)
+### Exit Flow (Settlement Reversal v3.0)
 
 ```mermaid
 flowchart TD
-    A[Check Active Positions] --> B{Stop Loss Hit? 5% margin}
-    B -->|Yes| C[EXIT: Stop Loss]
-    B -->|No| D{Funding Rate Reversed? >50% flip}
-    D -->|Yes| C2[EXIT: Rate Reversal]
-    D -->|No| E{Past Settlement Time?}
-    E -->|No| F[Keep Holding]
-    E -->|Yes| G[Verify Funding via API]
-    G --> H[Mark Funding Received]
-    H --> I{In Profit?}
-    I -->|Yes| J[EXIT: Profit]
-    I -->|No| K{Small Loss? > -0.2%}
-    K -->|Yes| L[EXIT: Small Loss]
-    K -->|No| M{Max Hold Time? 5 min}
-    M -->|Yes| N[EXIT: Max Hold]
-    M -->|No| F
+    A[Check Active Positions] --> B{Position Phase?}
+    B -->|pre_settlement| C{Stop Loss Hit? 5% margin}
+    B -->|reversed| R1{Stop Loss Hit?}
+    
+    C -->|Yes| D[EXIT: Stop Loss]
+    C -->|No| E{Funding Rate Reversed? >50% flip}
+    E -->|Yes| D2[EXIT: Rate Reversal]
+    E -->|No| F{Past Settlement Time?}
+    F -->|No| G[Keep Holding]
+    F -->|Yes| H[Verify Funding via API]
+    H --> I[Mark Funding Received]
+    I --> J{Reversal Enabled?}
+    J -->|No| K[Legacy Exit Logic]
+    J -->|Yes| L[CLOSE Position]
+    L --> M[OPEN Opposite Side]
+    M --> N[Track as Reversed Position]
+    
+    R1 -->|Yes| R2[EXIT: Reversed Stop Loss]
+    R1 -->|No| R3{Profit Target Hit? 0.05%}
+    R3 -->|Yes| R4[EXIT: Reversed Profit]
+    R3 -->|No| R5{Max Hold Time? 3 min}
+    R5 -->|Yes| R6[EXIT: Reversed Max Hold]
+    R5 -->|No| R7[Keep Holding Reversed]
 ```
 
-### Key Improvements in v2.0
+### Settlement Reversal Strategy
 
-| Issue | Before | After |
-|-------|--------|-------|
-| Entry Window | 1-5 minutes | 30s-1 minute |
-| Stop Loss | 0.5% of notional (too tight) | 5% of margin |
-| Funding Verification | Assumed after 30s | Verified via API |
-| Position Count | Checked once | Re-checked before each entry |
-| Reversal Threshold | 0.01% (too sensitive) | 50% of original rate |
-| Slippage Protection | None | Close if >0.3% |
-| Position Reconciliation | On PnL error only | Every 5 minutes |
+The bot uses a **settlement reversal** strategy to capture post-settlement price movement:
+
+```mermaid
+sequenceDiagram
+    participant Bot
+    participant Exchange
+    participant Market
+    
+    Note over Bot,Market: PHASE 1: Pre-Settlement
+    Bot->>Exchange: Open LONG (rate < 0, shorts pay)
+    Market-->>Bot: Price may move against
+    Note over Market: Settlement occurs
+    Exchange-->>Bot: Funding fee credited
+    
+    Note over Bot,Market: PHASE 2: Reversal
+    Bot->>Exchange: Close LONG
+    Bot->>Exchange: Open SHORT immediately
+    Note over Market: Price often reverses after settlement
+    
+    Note over Bot,Market: PHASE 3: Exit Reversed
+    Bot->>Exchange: Close SHORT on profit/max hold
+    Note over Bot: Combined PnL: First leg + Funding + Reversed leg
+```
+
+**Why Reversal Works:**
+- After extreme funding settlement, price often reverts as the imbalance corrects
+- First leg may be negative (price moved against during hold)
+- Reversed leg captures the reversion, turning overall trade profitable
+
+### Key Improvements
+
+| Issue | v1.0 | v2.0 | v3.0 |
+|-------|------|------|------|
+| Entry Window | 1-5 minutes | 30s-1 minute | 30s-1 minute |
+| Stop Loss | 0.5% notional | 5% of margin | 5% of margin |
+| Funding Verification | Assumed | Verified via API | Verified via API |
+| Post-Settlement | Exit on profit | Exit on profit/loss | **Settlement Reversal** |
+| Position Phases | Single | Single | Two-phase (pre/reversed) |
+| PnL Reporting | Per trade | Per trade | Combined (first + reversed) |
 
 ---
 
@@ -314,6 +353,14 @@ All settings in `src/config.py`:
 | `SOFT_LOSS_EXIT_PERCENT` | -0.002 (-0.2%) | Exit if loss is small |
 | `MAX_DAILY_LOSS_USD` | 10.0 | Daily loss limit |
 
+### Settlement Reversal
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `SETTLEMENT_REVERSAL_ENABLED` | true | Enable reversal after settlement |
+| `REVERSAL_PROFIT_TARGET_PERCENT` | 0.0005 (0.05%) | Profit target for reversed position |
+| `REVERSAL_MAX_HOLD_MINUTES` | 3 | Max hold time for reversed position |
+
 ### Filters
 
 | Setting | Default | Description |
@@ -385,7 +432,8 @@ The bot sends notifications for:
 | **Startup** | Config summary, mode |
 | **Opportunity** | Symbol, rate, side, time to settlement |
 | **Entry** | Symbol, side, quantity, leverage, expected funding |
-| **Exit** | PnL, funding received, reason, hold time |
+| **Reversal** | Original/reversed side, first leg PnL, funding, new entry price |
+| **Exit** | Combined PnL (first + reversed leg), funding received, reason, hold time |
 | **Error** | Type, details |
 | **Daily Summary** | Trade count, PnL, win rate |
 | **Reconciliation** | If position closed externally |
@@ -440,7 +488,17 @@ funding-fee-farming-strategy/
 
 ## Changelog
 
-### v2.0 (Latest)
+### v3.0 (Latest)
+
+- **Added** Settlement reversal strategy: close and open opposite position after funding
+- **Added** Two-phase position tracking (`pre_settlement` and `reversed` phases)
+- **Added** Combined PnL reporting (first leg + funding + reversed leg)
+- **Added** Reversal notification in Telegram
+- **Added** Configurable reversal profit target (0.05%) and max hold time (3 min)
+- **Changed** Pre-settlement positions now only exit on stop loss or rate reversal when reversal mode enabled
+- **Changed** `execute_exit()` returns tuple with PnL details for combined reporting
+
+### v2.0
 
 - **Fixed** 6 critical bugs (impossible exit, double-counting, stop loss, timing, reversal, position count)
 - **Added** Funding verification via Bybit API

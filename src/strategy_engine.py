@@ -169,16 +169,17 @@ class StrategyEngine:
                     # Position exists locally but not on exchange - likely liquidated/closed
                     logger.warning(f"Reconciliation: Position {position.position_id} ({position.symbol}) not found on exchange. Cleaning up.")
                     
-                    self.position_manager.execute_exit(
+                    success, _, _ = self.position_manager.execute_exit(
                         position_id=position.position_id,
                         reason="Reconciliation: Position closed/liquidated on exchange"
                     )
                     
                     # Notify about the discrepancy
-                    self.notifier.notify_error(
-                        "Position Reconciliation",
-                        f"{position.symbol} position was closed/liquidated externally"
-                    )
+                    if success:
+                        self.notifier.notify_error(
+                            "Position Reconciliation",
+                            f"{position.symbol} position was closed/liquidated externally"
+                        )
             
             logger.debug(f"Position reconciliation complete: {len(local_positions)} local, {len(exchange_positions)} on exchange")
             
@@ -420,15 +421,16 @@ class StrategyEngine:
             
             if slippage > self.config.MAX_SLIPPAGE_PERCENT:
                 logger.error(f"Excessive slippage on {symbol}: {slippage*100:.3f}% > {self.config.MAX_SLIPPAGE_PERCENT*100:.3f}%. Closing position immediately.")
-                self.position_manager.execute_exit(
+                success, _, _ = self.position_manager.execute_exit(
                     position_id=result.position_id,
                     reason=f"Excessive slippage: {slippage*100:.3f}%",
                     exit_price=actual_entry
                 )
-                self.notifier.notify_error(
-                    "Slippage Protection",
-                    f"{symbol}: Entry slippage {slippage*100:.3f}% exceeded max {self.config.MAX_SLIPPAGE_PERCENT*100:.3f}%. Position closed."
-                )
+                if success:
+                    self.notifier.notify_error(
+                        "Slippage Protection",
+                        f"{symbol}: Entry slippage {slippage*100:.3f}% exceeded max {self.config.MAX_SLIPPAGE_PERCENT*100:.3f}%. Position closed."
+                    )
                 return False
             
             # Notify entry
@@ -451,7 +453,13 @@ class StrategyEngine:
     
     async def manage_exits(self) -> None:
         """
-        Check exit conditions for all active positions and execute exits
+        Check exit conditions for all active positions and execute exits.
+        
+        For pre_settlement positions with reversal enabled:
+        - After funding settlement, close and open opposite position
+        
+        For reversed positions:
+        - Exit on profit target, max hold, or stop loss
         """
         positions = self.position_manager.get_active_positions()
         
@@ -468,7 +476,7 @@ class StrategyEngine:
                     
                     if not is_open:
                         logger.warning(f"Position {position.position_id} confirmed missing. Closing locally.")
-                        self.position_manager.execute_exit(
+                        success, _, _ = self.position_manager.execute_exit(
                             position_id=position.position_id,
                             reason="Force Close: Missing on exchange"
                         )
@@ -483,8 +491,9 @@ class StrategyEngine:
                 current_funding_rate = ticker_data.get("fundingRate")
                 
                 # Verify funding was actually received (not just assume after 30s)
+                # Only for pre_settlement positions
                 now = datetime.now(timezone.utc)
-                if not position.funding_received and now > position.funding_settlement_time:
+                if position.phase == "pre_settlement" and not position.funding_received and now > position.funding_settlement_time:
                     time_since = now - position.funding_settlement_time
                     if time_since >= timedelta(seconds=30):
                         # Verify with API instead of assuming
@@ -513,6 +522,20 @@ class StrategyEngine:
                             )
                             logger.warning(f"Could not verify funding for {position.symbol}, using estimate: ${estimated_funding:.4f}")
                 
+                # ================================================================
+                # SETTLEMENT REVERSAL: Close pre_settlement and open opposite
+                # ================================================================
+                if (self.config.SETTLEMENT_REVERSAL_ENABLED and 
+                    position.phase == "pre_settlement" and 
+                    position.funding_received):
+                    
+                    await self._execute_settlement_reversal(position, current_pnl, exit_price)
+                    continue  # Skip normal exit logic, reversal handles it
+                
+                # ================================================================
+                # NORMAL EXIT LOGIC
+                # ================================================================
+                
                 # Check exit conditions
                 should_exit, reason = self.position_manager.should_exit(
                     position=position,
@@ -524,27 +547,40 @@ class StrategyEngine:
                     trailing_stop_enabled=self.config.TRAILING_STOP_ENABLED,
                     trailing_activation_percent=self.config.TRAILING_ACTIVATION_PERCENT,
                     trailing_callback_percent=self.config.TRAILING_CALLBACK_PERCENT,
-                    max_hold_minutes=self.config.MAX_HOLD_MINUTES_AFTER_SETTLEMENT
+                    max_hold_minutes=self.config.MAX_HOLD_MINUTES_AFTER_SETTLEMENT,
+                    # Settlement reversal parameters
+                    settlement_reversal_enabled=self.config.SETTLEMENT_REVERSAL_ENABLED,
+                    reversal_profit_target_percent=self.config.REVERSAL_PROFIT_TARGET_PERCENT,
+                    reversal_max_hold_minutes=self.config.REVERSAL_MAX_HOLD_MINUTES
                 )
                 
                 if should_exit:
                     logger.info(f"Exiting {position.symbol}: {reason}")
                     
                     # Execute exit
-                    success = self.position_manager.execute_exit(
+                    success, realized_pnl, funding_amount = self.position_manager.execute_exit(
                         position_id=position.position_id,
                         reason=reason,
                         exit_price=exit_price
                     )
                     
                     if success:
-                        # Calculate PnL
-                        pnl = current_pnl + position.funding_amount
+                        # For reversed positions, realized_pnl already includes first leg
+                        # For pre_settlement, realized_pnl = current_pnl + funding
+                        pnl = realized_pnl
                         entry_value = float(position.quantity) * position.entry_price
                         pnl_percent = (pnl / entry_value * 100) if entry_value > 0 else 0
                         
+                        # Determine funding for notification
+                        # For reversed: funding was in first leg, stored in first_leg_funding
+                        # For pre_settlement: funding is in funding_amount
+                        if position.phase == "reversed":
+                            funding_for_notification = position.first_leg_funding
+                        else:
+                            funding_for_notification = funding_amount
+                        
                         # Record for daily summary
-                        self._record_trade_for_daily(pnl, position.funding_amount)
+                        self._record_trade_for_daily(pnl, funding_for_notification)
                         
                         # Notify exit
                         self.notifier.notify_exit(
@@ -554,13 +590,113 @@ class StrategyEngine:
                             exit_price=exit_price,
                             pnl=pnl,
                             pnl_percent=pnl_percent,
-                            funding_received=position.funding_amount,
+                            funding_received=funding_for_notification,
                             reason=reason,
                             hold_time=str(position.hold_duration).split('.')[0]
                         )
                         
             except Exception as e:
                 logger.error(f"Error managing position {position.position_id}: {e}")
+    
+    async def _execute_settlement_reversal(
+        self, 
+        position: FarmingPosition, 
+        current_pnl: float, 
+        exit_price: float
+    ) -> None:
+        """
+        Execute the settlement reversal: close pre_settlement position and open opposite.
+        
+        Args:
+            position: The pre_settlement position to reverse
+            current_pnl: Current unrealized PnL of the position
+            exit_price: Current market price for exit
+        """
+        symbol = position.symbol
+        original_position_id = position.position_id
+        
+        logger.info(f"Executing settlement reversal for {symbol}")
+        
+        # Calculate stop loss price for reversed position (opposite side)
+        opposite_side = "SHORT" if position.side == "LONG" else "LONG"
+        price_stop_percent = self.config.STOP_LOSS_PERCENT / position.leverage
+        
+        if opposite_side == "LONG":
+            sl_price_val = exit_price * (1 - price_stop_percent)
+        else:
+            sl_price_val = exit_price * (1 + price_stop_percent)
+        sl_price = f"{sl_price_val:.4f}"
+        
+        # Step 1: Close the pre_settlement position (skip trade log - will be logged with reversed)
+        success, first_leg_pnl, first_leg_funding = self.position_manager.execute_exit(
+            position_id=original_position_id,
+            reason="Settlement reversal",
+            exit_price=exit_price,
+            skip_trade_log=True  # Don't log yet, will log combined PnL when reversed closes
+        )
+        
+        if not success:
+            logger.error(f"Failed to close pre_settlement position {original_position_id} for reversal")
+            self.notifier.notify_error(
+                "Reversal Failed",
+                f"{symbol}: Could not close pre_settlement position"
+            )
+            return
+        
+        logger.info(f"Pre_settlement position closed. First leg PnL: ${first_leg_pnl:.4f}, Funding: ${first_leg_funding:.4f}")
+        
+        # Step 2: Open the reversed position (opposite side)
+        result = self.executor.open_position(
+            symbol=symbol,
+            side=opposite_side,
+            quantity=position.quantity,
+            leverage=position.leverage,
+            stop_loss_price=sl_price
+        )
+        
+        if not result.success:
+            logger.error(f"Failed to open reversed position for {symbol}: {result.error}")
+            self.notifier.notify_error(
+                "Reversal Failed",
+                f"{symbol}: Pre_settlement closed (PnL: ${first_leg_pnl:.4f}) but reversed open failed: {result.error}"
+            )
+            # Log the first leg as a standalone trade since reversal failed
+            # The trade wasn't logged because skip_trade_log=True, so we need to manually record it
+            self._record_trade_for_daily(first_leg_pnl, first_leg_funding)
+            return
+        
+        # Step 3: Create the reversed position
+        reversed_position = FarmingPosition(
+            position_id=result.position_id,
+            symbol=symbol,
+            side=opposite_side,
+            quantity=position.quantity,
+            entry_price=result.entry_price or exit_price,
+            leverage=position.leverage,
+            expected_funding_rate=0.0,  # No funding expected for reversed position
+            funding_settlement_time=position.funding_settlement_time,  # Keep original for reference
+            entry_time=datetime.now(timezone.utc),
+            # Settlement reversal fields
+            phase="reversed",
+            parent_position_id=original_position_id,
+            first_leg_pnl=first_leg_pnl,
+            first_leg_funding=first_leg_funding
+        )
+        
+        self.position_manager.add_position(reversed_position)
+        
+        logger.info(f"Reversed position opened: {symbol} {opposite_side} @ {result.entry_price}")
+        
+        # Notify reversal
+        self.notifier.notify_reversal_opened(
+            symbol=symbol,
+            original_side=position.side,
+            reversed_side=opposite_side,
+            first_leg_pnl=first_leg_pnl,
+            first_leg_funding=first_leg_funding,
+            entry_price=result.entry_price or exit_price,
+            position_id=result.position_id
+        )
     
     def _notify_startup(self) -> None:
         """Send startup notification with config summary"""

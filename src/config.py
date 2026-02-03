@@ -76,6 +76,21 @@ class FarmingConfig:
     SOFT_LOSS_EXIT_PERCENT: float = -0.002
     
     # ==========================================================================
+    # SETTLEMENT REVERSAL STRATEGY
+    # ==========================================================================
+    # Enable settlement reversal: after funding settlement, close position and 
+    # open opposite side to capture post-settlement price movement
+    SETTLEMENT_REVERSAL_ENABLED: bool = True
+    
+    # Profit target for reversed position (0.05% = 0.0005)
+    # Exit reversed position when profit >= this percentage
+    REVERSAL_PROFIT_TARGET_PERCENT: float = 0.0005
+    
+    # Maximum hold time for reversed position (minutes)
+    # Exit reversed position after this time regardless of PnL
+    REVERSAL_MAX_HOLD_MINUTES: int = 3
+    
+    # ==========================================================================
     # SAFETY CHECKS
     # ==========================================================================
     # Max allowed spread between Mark and Last price (1%)

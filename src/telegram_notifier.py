@@ -150,6 +150,40 @@ class TelegramNotifier:
 """
         return self.send_message(message.strip())
     
+    def notify_reversal_opened(
+        self,
+        symbol: str,
+        original_side: str,
+        reversed_side: str,
+        first_leg_pnl: float,
+        first_leg_funding: float,
+        entry_price: float,
+        position_id: str
+    ) -> bool:
+        """Notify about settlement reversal - position flipped to opposite side"""
+        
+        first_leg_total = first_leg_pnl + first_leg_funding
+        first_leg_emoji = "💰" if first_leg_total >= 0 else "💸"
+        side_emoji = "🟢" if reversed_side == "LONG" else "🔴"
+        
+        message = f"""
+🔄 <b>SETTLEMENT REVERSAL</b>
+
+<b>{symbol}</b>
+📊 Original: <code>{original_side}</code> → Reversed: <code>{reversed_side}</code>
+
+{first_leg_emoji} First Leg PnL: ${first_leg_pnl:+.4f}
+🎁 Funding Received: ${first_leg_funding:+.4f}
+📊 First Leg Total: ${first_leg_total:+.4f}
+
+{side_emoji} <b>NEW POSITION</b>
+💰 Entry Price: ${entry_price:,.4f}
+🆔 Position: <code>{position_id[:16]}...</code>
+
+⏳ Waiting for profit target or max hold time...
+"""
+        return self.send_message(message.strip())
+    
     def notify_error(self, error_type: str, details: str) -> bool:
         """Notify about errors"""
         
