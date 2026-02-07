@@ -7,7 +7,7 @@ All configurable parameters for the Funding Fee Farming Strategy.
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, List
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,9 +22,15 @@ class FarmingConfig:
     # ==========================================================================
     MUDREX_API_SECRET: str = field(default_factory=lambda: os.getenv("MUDREX_API_SECRET", ""))
     
-    # Telegram notifications
+    # Telegram notifications (comma-separated chat IDs for multiple recipients)
     TELEGRAM_BOT_TOKEN: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
     TELEGRAM_CHAT_ID: str = field(default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID", ""))
+    
+    @property
+    def TELEGRAM_CHAT_IDS(self) -> List[str]:
+        """Parse TELEGRAM_CHAT_ID into list (comma-separated)."""
+        raw = (self.TELEGRAM_CHAT_ID or "").strip()
+        return [x.strip() for x in raw.split(",") if x.strip()]
     
     # ==========================================================================
     # FUNDING RATE THRESHOLDS
@@ -172,8 +178,8 @@ class FarmingConfig:
             warnings.append("MARGIN_PERCENTAGE must be between 1 and 100")
         if not self.TELEGRAM_BOT_TOKEN:
             warnings.append("TELEGRAM_BOT_TOKEN not set - notifications disabled")
-        if not self.TELEGRAM_CHAT_ID:
-            warnings.append("TELEGRAM_CHAT_ID not set - notifications disabled")
+        if not self.TELEGRAM_CHAT_IDS:
+            warnings.append("TELEGRAM_CHAT_ID not set (comma-separated for multiple) - notifications disabled")
         return warnings
     
     @property

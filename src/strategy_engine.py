@@ -39,7 +39,7 @@ class StrategyEngine:
         )
         self.notifier = TelegramNotifier(
             bot_token=config.TELEGRAM_BOT_TOKEN,
-            chat_id=config.TELEGRAM_CHAT_ID
+            chat_ids=config.TELEGRAM_CHAT_IDS
         )
         
         # Daily summary tracking

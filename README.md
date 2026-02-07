@@ -393,9 +393,10 @@ docker-compose down
 MUDREX_API_SECRET=your_api_secret
 MARGIN_PERCENTAGE=50   # % of futures wallet (set in Railway; no default)
 
-# Optional (Telegram notifications)
+# Optional (Telegram notifications; comma-separated for multiple chats)
 TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
+# TELEGRAM_CHAT_ID=123,456,789
 ```
 
 ---

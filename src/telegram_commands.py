@@ -8,7 +8,7 @@ Commands: /kill, /live, /status, /stats
 
 import logging
 import asyncio
-from typing import Optional, Callable, Any
+from typing import Optional, Callable, Any, List, Union
 from datetime import datetime, timezone
 import requests
 import threading
@@ -17,12 +17,16 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramCommandHandler:
-    """Handle Telegram commands for bot control"""
+    """Handle Telegram commands for bot control (supports multiple authorized chats)"""
     
-    def __init__(self, bot_token: str, chat_id: str):
+    def __init__(self, bot_token: str, chat_ids: Union[str, List[str]]):
         self.bot_token = bot_token
-        self.chat_id = chat_id
-        self.enabled = bool(bot_token and chat_id)
+        if isinstance(chat_ids, str):
+            self.chat_ids = [x.strip() for x in chat_ids.split(",") if x.strip()]
+        else:
+            self.chat_ids = list(chat_ids) if chat_ids else []
+        self._authorized = set(self.chat_ids)
+        self.enabled = bool(bot_token and self.chat_ids)
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
         self.last_update_id = 0
         self.running = False
@@ -112,29 +116,29 @@ class TelegramCommandHandler:
         chat_id = str(message.get("chat", {}).get("id", ""))
         text = message.get("text", "").strip().lower()
         
-        # Only respond to messages from authorized chat
-        if chat_id != self.chat_id:
+        # Only respond to messages from authorized chats
+        if chat_id not in self._authorized:
             logger.warning(f"Ignoring message from unauthorized chat: {chat_id}")
             return
         
-        # Handle commands
+        # Handle commands (reply to the chat that sent the command)
         if text == "/kill":
-            self._handle_kill()
+            self._handle_kill(chat_id)
         elif text == "/live":
-            self._handle_live()
+            self._handle_live(chat_id)
         elif text == "/status":
-            self._handle_status()
+            self._handle_status(chat_id)
         elif text == "/stats":
-            self._handle_stats()
+            self._handle_stats(chat_id)
         elif text == "/help":
-            self._handle_help()
+            self._handle_help(chat_id)
     
-    def _send_message(self, text: str):
-        """Send message to chat"""
+    def _send_message(self, chat_id: str, text: str):
+        """Send message to a specific chat"""
         try:
             url = f"{self.base_url}/sendMessage"
             payload = {
-                "chat_id": self.chat_id,
+                "chat_id": chat_id,
                 "text": text,
                 "parse_mode": "HTML"
             }
@@ -142,25 +146,25 @@ class TelegramCommandHandler:
         except Exception as e:
             logger.error(f"Error sending message: {e}")
     
-    def _handle_kill(self):
+    def _handle_kill(self, chat_id: str):
         """Handle /kill command"""
         logger.info("Received /kill command")
         if self._on_kill:
             self._on_kill()
-            self._send_message("🛑 <b>Strategy STOPPED</b>\n\nThe bot is paused and will not enter new positions.\nUse /live to resume.")
+            self._send_message(chat_id, "🛑 <b>Strategy STOPPED</b>\n\nThe bot is paused and will not enter new positions.\nUse /live to resume.")
         else:
-            self._send_message("⚠️ Kill callback not configured")
+            self._send_message(chat_id, "⚠️ Kill callback not configured")
     
-    def _handle_live(self):
+    def _handle_live(self, chat_id: str):
         """Handle /live command"""
         logger.info("Received /live command")
         if self._on_live:
             self._on_live()
-            self._send_message("🟢 <b>Strategy LIVE</b>\n\nThe bot is now actively scanning for opportunities.")
+            self._send_message(chat_id, "🟢 <b>Strategy LIVE</b>\n\nThe bot is now actively scanning for opportunities.")
         else:
-            self._send_message("⚠️ Live callback not configured")
+            self._send_message(chat_id, "⚠️ Live callback not configured")
     
-    def _handle_status(self):
+    def _handle_status(self, chat_id: str):
         """Handle /status command"""
         logger.info("Received /status command")
         if self._on_status:
@@ -178,11 +182,11 @@ class TelegramCommandHandler:
 <b>Uptime:</b> {status.get('uptime', 'N/A')}
 <b>Last Scan:</b> {status.get('last_scan', 'N/A')}
 """
-            self._send_message(message.strip())
+            self._send_message(chat_id, message.strip())
         else:
-            self._send_message("⚠️ Status callback not configured")
+            self._send_message(chat_id, "⚠️ Status callback not configured")
     
-    def _handle_stats(self):
+    def _handle_stats(self, chat_id: str):
         """Handle /stats command"""
         logger.info("Received /stats command")
         if self._on_stats:
@@ -205,11 +209,11 @@ class TelegramCommandHandler:
 💰 Total PnL: ${pnl:+.4f}
 🎁 Total Funding: ${stats.get('total_funding', 0):+.4f}
 """
-            self._send_message(message.strip())
+            self._send_message(chat_id, message.strip())
         else:
-            self._send_message("⚠️ Stats callback not configured")
+            self._send_message(chat_id, "⚠️ Stats callback not configured")
     
-    def _handle_help(self):
+    def _handle_help(self, chat_id: str):
         """Handle /help command"""
         message = """
 🤖 <b>FUNDING FEE FARMER COMMANDS</b>
@@ -220,4 +224,4 @@ class TelegramCommandHandler:
 /live - Resume the strategy
 /help - Show this help message
 """
-        self._send_message(message.strip())
+        self._send_message(chat_id, message.strip())

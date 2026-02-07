@@ -7,61 +7,66 @@ Sends notifications for trade entries, exits, and alerts.
 
 import logging
 import requests
-from typing import Optional
+from typing import Optional, List, Union
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 
 class TelegramNotifier:
-    """Send trading notifications via Telegram"""
+    """Send trading notifications via Telegram to one or more chat IDs"""
     
-    def __init__(self, bot_token: str, chat_id: str):
+    def __init__(self, bot_token: str, chat_ids: Union[str, List[str]]):
         self.bot_token = bot_token
-        self.chat_id = chat_id
-        self.enabled = bool(bot_token and chat_id)
+        if isinstance(chat_ids, str):
+            self.chat_ids = [x.strip() for x in chat_ids.split(",") if x.strip()]
+        else:
+            self.chat_ids = list(chat_ids) if chat_ids else []
+        self.enabled = bool(bot_token and self.chat_ids)
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
         
         if not self.enabled:
-            logger.warning("Telegram notifications disabled - missing bot token or chat ID")
+            logger.warning("Telegram notifications disabled - missing bot token or chat ID(s)")
     
     def send_message(self, message: str, parse_mode: str = "HTML") -> bool:
         """
-        Send a message to the configured chat
+        Send a message to all configured chat IDs.
         
         Args:
             message: Message text
             parse_mode: HTML or Markdown
         
         Returns:
-            True if sent successfully
+            True if sent to at least one chat successfully
         """
         if not self.enabled:
             logger.debug(f"Telegram disabled, would send: {message[:100]}...")
             return False
         
-        try:
-            url = f"{self.base_url}/sendMessage"
-            payload = {
-                "chat_id": self.chat_id,
-                "text": message,
-                "parse_mode": parse_mode,
-                "disable_web_page_preview": True
-            }
-            
-            response = requests.post(url, json=payload, timeout=10)
-            response.raise_for_status()
-            
-            result = response.json()
-            if not result.get("ok"):
-                logger.error(f"Telegram API error: {result}")
-                return False
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to send Telegram message: {e}")
-            return False
+        any_ok = False
+        for chat_id in self.chat_ids:
+            try:
+                url = f"{self.base_url}/sendMessage"
+                payload = {
+                    "chat_id": chat_id,
+                    "text": message,
+                    "parse_mode": parse_mode,
+                    "disable_web_page_preview": True
+                }
+                
+                response = requests.post(url, json=payload, timeout=10)
+                response.raise_for_status()
+                
+                result = response.json()
+                if result.get("ok"):
+                    any_ok = True
+                else:
+                    logger.error(f"Telegram API error for chat {chat_id}: {result}")
+                    
+            except Exception as e:
+                logger.error(f"Failed to send Telegram message to {chat_id}: {e}")
+        
+        return any_ok
     
     def notify_opportunity_detected(
         self,

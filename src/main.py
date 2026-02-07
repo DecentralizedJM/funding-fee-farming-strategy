@@ -69,7 +69,7 @@ def main():
         logger.info(f"  - Margin: {config.MARGIN_PERCENTAGE or 'NOT SET'}% of futures balance, Leverage: {config.MIN_LEVERAGE}-{config.MAX_LEVERAGE}x")
         logger.info(f"  - Max Positions: {config.MAX_CONCURRENT_POSITIONS}")
         logger.info(f"  - Min Order: ${config.MIN_ORDER_VALUE_USD}")
-        logger.info(f"  - Telegram: {'Enabled' if config.TELEGRAM_BOT_TOKEN else 'Disabled'}")
+        logger.info(f"  - Telegram: {'Enabled' if config.TELEGRAM_BOT_TOKEN else 'Disabled'} ({len(config.TELEGRAM_CHAT_IDS)} chat(s))")
         logger.info(f"  - Mudrex API: {'Configured' if config.MUDREX_API_SECRET else 'NOT SET'}")
         
         # Initialize strategy engine
@@ -78,7 +78,7 @@ def main():
         # Initialize telegram command handler
         cmd_handler = TelegramCommandHandler(
             bot_token=config.TELEGRAM_BOT_TOKEN,
-            chat_id=config.TELEGRAM_CHAT_ID
+            chat_ids=config.TELEGRAM_CHAT_IDS
         )
         
         # Set up command callbacks
