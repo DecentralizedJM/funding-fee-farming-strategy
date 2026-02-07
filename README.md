@@ -332,6 +332,8 @@ All settings in `src/config.py`:
 | `EXTREME_RATE_THRESHOLD` | 0.006 (0.6%) | Minimum funding rate to farm |
 | `ENTRY_MIN_SECONDS_BEFORE` | 1 | Earliest entry (seconds before settlement) |
 | `ENTRY_MAX_SECONDS_BEFORE` | 10 | Latest entry (last 10s before settlement) |
+| `ENTRY_FAST_SCAN_WHEN_SECONDS_LEFT` | 60 | When any opportunity has ≤ this many seconds to settlement, scan every `ENTRY_FAST_SCAN_SECONDS` so the 1-10s window is not missed |
+| `ENTRY_FAST_SCAN_SECONDS` | 3 | Sleep between scans when close to settlement (default scan remains 30s when not close) |
 | `MAX_CONCURRENT_POSITIONS` | 3 | Maximum simultaneous positions |
 
 ### Position Sizing

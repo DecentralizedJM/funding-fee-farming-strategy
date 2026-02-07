@@ -48,6 +48,10 @@ class FarmingConfig:
     # Entry allowed when seconds until settlement is between min and max
     ENTRY_MIN_SECONDS_BEFORE: int = 1    # At least 1 second before (avoid race)
     ENTRY_MAX_SECONDS_BEFORE: int = 10   # Up to 10 seconds before settlement
+    # When any opportunity has <= this many seconds to settlement, scan every ENTRY_FAST_SCAN_SECONDS
+    # so we don't miss the 1-10s window (normal 30s scan would skip past it)
+    ENTRY_FAST_SCAN_WHEN_SECONDS_LEFT: int = 60
+    ENTRY_FAST_SCAN_SECONDS: int = 3
     
     # ==========================================================================
     # RISK MANAGEMENT

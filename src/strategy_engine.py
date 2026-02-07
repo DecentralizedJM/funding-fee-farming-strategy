@@ -101,13 +101,20 @@ class StrategyEngine:
                 await self._reconcile_positions()
                 
                 # Scan for opportunities and enter if appropriate
-                await self.scan_and_enter()
+                min_seconds_to_settlement = await self.scan_and_enter()
                 
                 # Manage existing positions (check exit conditions)
                 await self.manage_exits()
                 
-                # Wait before next scan
-                await asyncio.sleep(self.config.SCAN_INTERVAL_SECONDS)
+                # Adaptive sleep: when an opportunity is close to settlement, scan every few seconds
+                # so we don't miss the 1-10s entry window (30s scan would skip past it)
+                if (min_seconds_to_settlement is not None and
+                    0 < min_seconds_to_settlement <= self.config.ENTRY_FAST_SCAN_WHEN_SECONDS_LEFT):
+                    sleep_seconds = self.config.ENTRY_FAST_SCAN_SECONDS
+                    logger.debug(f"Fast scan: {min_seconds_to_settlement:.0f}s to settlement, sleeping {sleep_seconds}s")
+                else:
+                    sleep_seconds = self.config.SCAN_INTERVAL_SECONDS
+                await asyncio.sleep(sleep_seconds)
                 
             except Exception as e:
                 logger.error(f"Error in main loop: {e}", exc_info=True)
@@ -202,24 +209,28 @@ class StrategyEngine:
         self.running = False
         logger.info("Strategy stopped")
     
-    async def scan_and_enter(self) -> None:
+    async def scan_and_enter(self) -> Optional[float]:
         """
-        Scan for extreme funding opportunities and enter positions
+        Scan for extreme funding opportunities and enter positions.
+        
+        Returns:
+            Minimum seconds until settlement among considered opportunities (for adaptive sleep),
+            or None if no opportunities or all skipped early.
         """
         # Skip if paused via /kill command
         if self._paused:
-            return
+            return None
             
         # Check daily loss limit
         if self._daily_pnl <= -self.config.MAX_DAILY_LOSS_USD:
             logger.warning(f"Daily loss limit reached (${self._daily_pnl:.2f} <= -${self.config.MAX_DAILY_LOSS_USD}). Pausing new entries.")
-            return
+            return None
         
         # Check if we can open more positions
         active_count = self.position_manager.get_active_count()
         if active_count >= self.config.MAX_CONCURRENT_POSITIONS:
             logger.debug(f"Max positions reached ({active_count}/{self.config.MAX_CONCURRENT_POSITIONS})")
-            return
+            return None
         
         # Scan for opportunities
         opportunities = self.fetcher.get_extreme_funding_opportunities(
@@ -228,9 +239,11 @@ class StrategyEngine:
         
         if not opportunities:
             logger.debug("No extreme funding opportunities found")
-            return
+            return None
         
         logger.info(f"Found {len(opportunities)} extreme funding opportunities")
+        
+        min_seconds_to_settlement: Optional[float] = None
         
         # Filter to entry window and execute
         for opp in opportunities:
@@ -258,16 +271,22 @@ class StrategyEngine:
                 logger.debug(f"Skipping {opp['symbol']}: volume ${volume_24h:,.0f} < ${self.config.MIN_VOLUME_24H:,.0f}")
                 continue
 
+            # Track minimum seconds to settlement for adaptive scan (so we fast-scan when close)
+            time_to_settlement = self.fetcher.get_time_to_next_settlement(opp["nextFundingTime"])
+            secs = time_to_settlement.total_seconds()
+            if min_seconds_to_settlement is None or secs < min_seconds_to_settlement:
+                min_seconds_to_settlement = secs
+
             # Check if in entry window
             if self._is_in_entry_window(opp["nextFundingTime"]):
                 await self._execute_entry(opp)
             else:
-                time_to_settlement = self.fetcher.get_time_to_next_settlement(opp["nextFundingTime"])
-                seconds_remaining = time_to_settlement.total_seconds()
-                reason = f"Outside entry window ({seconds_remaining:.0f}s until settlement, window: {self.config.ENTRY_MIN_SECONDS_BEFORE}-{self.config.ENTRY_MAX_SECONDS_BEFORE}s)"
+                reason = f"Outside entry window ({secs:.0f}s until settlement, window: {self.config.ENTRY_MIN_SECONDS_BEFORE}-{self.config.ENTRY_MAX_SECONDS_BEFORE}s)"
                 logger.info(f"Skipping {opp['symbol']}: {reason}")
                 if self.config.NOTIFY_SKIPS:
                     self._notify_skip_throttled(opp["symbol"], reason)
+        
+        return min_seconds_to_settlement
     
     def _is_in_entry_window(self, next_funding_time_ms: int) -> bool:
         """
