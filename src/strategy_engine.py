@@ -7,6 +7,7 @@ Main orchestration engine for funding fee farming.
 
 import asyncio
 import logging
+import math
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict
 
@@ -88,7 +89,7 @@ class StrategyEngine:
         
         logger.info("Starting funding fee farming strategy...")
         logger.info(f"Scan interval: {self.config.SCAN_INTERVAL_SECONDS}s")
-        logger.info(f"Entry window: {self.config.ENTRY_MIN_MINUTES_BEFORE}-{self.config.ENTRY_MAX_MINUTES_BEFORE} mins before settlement")
+        logger.info(f"Entry window: last {self.config.ENTRY_MIN_SECONDS_BEFORE}-{self.config.ENTRY_MAX_SECONDS_BEFORE}s before settlement")
         logger.info(f"Threshold: {self.config.EXTREME_RATE_THRESHOLD * 100:.2f}%")
         
         while self.running:
@@ -262,15 +263,15 @@ class StrategyEngine:
                 await self._execute_entry(opp)
             else:
                 time_to_settlement = self.fetcher.get_time_to_next_settlement(opp["nextFundingTime"])
-                minutes_remaining = time_to_settlement.total_seconds() / 60
-                reason = f"Outside entry window ({minutes_remaining:.1f}m until settlement, window: {self.config.ENTRY_MIN_MINUTES_BEFORE}-{self.config.ENTRY_MAX_MINUTES_BEFORE}m)"
+                seconds_remaining = time_to_settlement.total_seconds()
+                reason = f"Outside entry window ({seconds_remaining:.0f}s until settlement, window: {self.config.ENTRY_MIN_SECONDS_BEFORE}-{self.config.ENTRY_MAX_SECONDS_BEFORE}s)"
                 logger.info(f"Skipping {opp['symbol']}: {reason}")
                 if self.config.NOTIFY_SKIPS:
                     self._notify_skip_throttled(opp["symbol"], reason)
     
     def _is_in_entry_window(self, next_funding_time_ms: int) -> bool:
         """
-        Check if we're in the entry window before settlement
+        Check if we're in the entry window before settlement (last 1-10 seconds).
         
         Args:
             next_funding_time_ms: Next funding time in milliseconds
@@ -282,11 +283,11 @@ class StrategyEngine:
             return False
         
         time_to_settlement = self.fetcher.get_time_to_next_settlement(next_funding_time_ms)
-        minutes_remaining = time_to_settlement.total_seconds() / 60
+        seconds_remaining = time_to_settlement.total_seconds()
         
         return (
-            self.config.ENTRY_MIN_MINUTES_BEFORE <= minutes_remaining <= 
-            self.config.ENTRY_MAX_MINUTES_BEFORE
+            self.config.ENTRY_MIN_SECONDS_BEFORE <= seconds_remaining <= 
+            self.config.ENTRY_MAX_SECONDS_BEFORE
         )
     
     async def _execute_entry(self, opportunity: Dict) -> bool:
@@ -336,32 +337,57 @@ class StrategyEngine:
             price=price
         )
         
-        # Get asset info for leverage and sizing
-        instrument_info = self.fetcher.get_instrument_info(symbol)
+        # Margin percentage must be set (e.g. via Railway variable MARGIN_PERCENTAGE)
+        if self.config.MARGIN_PERCENTAGE is None or self.config.MARGIN_PERCENTAGE <= 0 or self.config.MARGIN_PERCENTAGE > 100:
+            logger.warning("MARGIN_PERCENTAGE not set or invalid (use 1-100) - skipping entry")
+            return False
         
-        # Dynamic leverage: 10x for rate > 1%, 7x for rate > 0.75%, else 5x (clamped to MIN/MAX)
-        abs_rate = abs(funding_rate)
-        if abs_rate >= 0.01:  # 1%
-            leverage = self.config.MAX_LEVERAGE
-        elif abs_rate >= 0.0075:  # 0.75%
-            leverage = max(self.config.MIN_LEVERAGE, min(7, self.config.MAX_LEVERAGE))
-        else:
-            leverage = self.config.MIN_LEVERAGE
+        # Get futures balance and compute margin from percentage
+        balance = self.executor.get_futures_balance()
+        if balance is None or balance <= 0:
+            logger.warning(f"Cannot get futures balance or balance is zero - skipping {symbol}")
+            return False
+        
+        margin_usd = balance * (self.config.MARGIN_PERCENTAGE / 100.0)
+        min_order = self.config.MIN_ORDER_VALUE_USD
+        min_lev, max_lev = self.config.MIN_LEVERAGE, self.config.MAX_LEVERAGE
+        
+        # Need notional >= min_order. At max leverage: margin_usd * max_lev >= min_order
+        if margin_usd * max_lev < min_order:
+            logger.warning(
+                f"Insufficient margin for {symbol}: ${margin_usd:.2f} * {max_lev}x = ${margin_usd * max_lev:.2f} < ${min_order}. Need at least ${min_order / max_lev:.2f} margin."
+            )
+            return False
+        
+        # Scale leverage to meet min order value: leverage >= min_order / margin_usd, clamp 10-25
+        leverage_needed = math.ceil(min_order / margin_usd) if margin_usd > 0 else max_lev
+        leverage = max(min_lev, min(max_lev, leverage_needed))
+        
+        # Clamp to asset max leverage
+        instrument_info = self.fetcher.get_instrument_info(symbol)
         if instrument_info:
             max_asset = int(instrument_info.get("maxLeverage", 100))
             leverage = min(leverage, max_asset)
+            if leverage < min_lev:
+                logger.warning(f"Asset {symbol} max leverage {max_asset} < min {min_lev}x - skipping")
+                return False
         
-        # Calculate position size from fixed margin
+        # Calculate position size (notional = margin_usd * leverage, must be >= min_order)
         quantity = self.executor.calculate_position_size(
             symbol=symbol,
             price=price,
             leverage=leverage,
-            margin_usd=self.config.MARGIN_USD,
-            min_order_value_usd=self.config.MIN_ORDER_VALUE_USD
+            margin_usd=margin_usd,
+            min_order_value_usd=min_order
         )
         
         if not quantity:
             logger.error(f"Could not calculate position size for {symbol}")
+            return False
+        
+        notional = margin_usd * leverage
+        if notional < min_order:
+            logger.warning(f"Position notional ${notional:.2f} < min ${min_order} for {symbol} - skipping")
             return False
 
         # Calculate Stop Loss Price (critical for avoiding liquidation with high leverage)
@@ -376,11 +402,11 @@ class StrategyEngine:
             sl_price_val = price * (1 + price_stop_percent)
             sl_price = f"{sl_price_val:.4f}"
 
-        # Bug #4 fix: Re-check timing before placing order (execution can take 10-30s)
+        # Re-check timing before placing order (execution can take time)
         # If we're no longer in the entry window, abort to avoid missing settlement
         time_to_settlement = self.fetcher.get_time_to_next_settlement(next_funding_time)
         seconds_remaining = time_to_settlement.total_seconds()
-        min_seconds = self.config.ENTRY_MIN_MINUTES_BEFORE * 60
+        min_seconds = float(self.config.ENTRY_MIN_SECONDS_BEFORE)
         
         if seconds_remaining < min_seconds:
             logger.warning(f"Entry aborted: Only {seconds_remaining:.0f}s until settlement (min: {min_seconds:.0f}s). Would miss funding.")
@@ -523,14 +549,41 @@ class StrategyEngine:
                             logger.warning(f"Could not verify funding for {position.symbol}, using estimate: ${estimated_funding:.4f}")
                 
                 # ================================================================
-                # SETTLEMENT REVERSAL: Close pre_settlement and open opposite
+                # POST-SETTLEMENT: If in profit exit; else reverse and exit in profit
                 # ================================================================
                 if (self.config.SETTLEMENT_REVERSAL_ENABLED and 
                     position.phase == "pre_settlement" and 
                     position.funding_received):
                     
-                    await self._execute_settlement_reversal(position, current_pnl, exit_price)
-                    continue  # Skip normal exit logic, reversal handles it
+                    total_pnl = current_pnl + position.funding_amount
+                    if total_pnl > 0:
+                        # In profit after settlement - exit immediately, no reversal
+                        logger.info(f"Post-settlement profit for {position.symbol}: ${total_pnl:.4f} - exiting (no reversal)")
+                        success, realized_pnl, funding_amount = self.position_manager.execute_exit(
+                            position_id=position.position_id,
+                            reason="Post-settlement profit exit",
+                            exit_price=exit_price
+                        )
+                        if success:
+                            entry_value = float(position.quantity) * position.entry_price
+                            pnl_percent = (realized_pnl / entry_value * 100) if entry_value > 0 else 0
+                            self._record_trade_for_daily(realized_pnl, position.funding_amount)
+                            self.notifier.notify_exit(
+                                symbol=position.symbol,
+                                side=position.side,
+                                entry_price=position.entry_price,
+                                exit_price=exit_price,
+                                pnl=realized_pnl,
+                                pnl_percent=pnl_percent,
+                                funding_received=position.funding_amount,
+                                reason="Post-settlement profit exit",
+                                hold_time=str(position.hold_duration).split('.')[0]
+                            )
+                        continue
+                    else:
+                        # Not in profit - reverse and exit reversed leg in profit / max hold / SL
+                        await self._execute_settlement_reversal(position, current_pnl, exit_price)
+                        continue
                 
                 # ================================================================
                 # NORMAL EXIT LOGIC
@@ -704,10 +757,11 @@ class StrategyEngine:
         config_summary = f"""
 <b>Mode:</b> LIVE
 <b>Threshold:</b> {self.config.EXTREME_RATE_THRESHOLD * 100:.2f}%
-<b>Entry Window:</b> {self.config.ENTRY_MIN_MINUTES_BEFORE}-{self.config.ENTRY_MAX_MINUTES_BEFORE} mins
+<b>Entry Window:</b> last {self.config.ENTRY_MIN_SECONDS_BEFORE}-{self.config.ENTRY_MAX_SECONDS_BEFORE}s
 <b>Max Positions:</b> {self.config.MAX_CONCURRENT_POSITIONS}
-<b>Margin:</b> ${self.config.MARGIN_USD}
-<b>Leverage:</b> {self.config.MIN_LEVERAGE}-{self.config.MAX_LEVERAGE}x (dynamic)
+<b>Margin:</b> {self.config.MARGIN_PERCENTAGE or 'NOT SET'}% of futures balance
+<b>Leverage:</b> {self.config.MIN_LEVERAGE}-{self.config.MAX_LEVERAGE}x
+<b>Min Order:</b> ${self.config.MIN_ORDER_VALUE_USD}
 """
         self.notifier.notify_startup(config_summary.strip())
     

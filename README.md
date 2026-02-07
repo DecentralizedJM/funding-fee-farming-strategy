@@ -330,18 +330,18 @@ All settings in `src/config.py`:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `EXTREME_RATE_THRESHOLD` | 0.006 (0.6%) | Minimum funding rate to farm |
-| `ENTRY_MIN_MINUTES_BEFORE` | 0.5 (30s) | Earliest entry before settlement |
-| `ENTRY_MAX_MINUTES_BEFORE` | 1.0 (1min) | Latest entry before settlement |
+| `ENTRY_MIN_SECONDS_BEFORE` | 1 | Earliest entry (seconds before settlement) |
+| `ENTRY_MAX_SECONDS_BEFORE` | 10 | Latest entry (last 10s before settlement) |
 | `MAX_CONCURRENT_POSITIONS` | 3 | Maximum simultaneous positions |
 
 ### Position Sizing
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `MARGIN_USD` | 2.0 | Fixed margin per position |
-| `MIN_LEVERAGE` | 5 | Minimum leverage |
-| `MAX_LEVERAGE` | 10 | Maximum leverage |
-| `USE_MAX_LEVERAGE` | true | Enable dynamic leverage |
+| `MARGIN_PERCENTAGE` | (none) | Margin as % of futures wallet; set in Railway (e.g. 50 = 50%) |
+| `MIN_LEVERAGE` | 10 | Minimum leverage (hardcoded) |
+| `MAX_LEVERAGE` | 25 | Maximum leverage (hardcoded) |
+| `MIN_ORDER_VALUE_USD` | 7.0 | Minimum total order size (notional) in USD |
 
 ### Risk Management
 
@@ -391,6 +391,7 @@ docker-compose down
 ```bash
 # Required
 MUDREX_API_SECRET=your_api_secret
+MARGIN_PERCENTAGE=50   # % of futures wallet (set in Railway; no default)
 
 # Optional (Telegram notifications)
 TELEGRAM_BOT_TOKEN=your_bot_token

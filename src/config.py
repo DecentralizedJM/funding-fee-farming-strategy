@@ -38,9 +38,10 @@ class FarmingConfig:
     # ==========================================================================
     # ENTRY TIMING
     # ==========================================================================
-    # Enter position within this window before settlement (minimize price exposure)
-    ENTRY_MIN_MINUTES_BEFORE: float = 0.5   # 30 seconds minimum
-    ENTRY_MAX_MINUTES_BEFORE: float = 1.0   # 1 minute maximum
+    # Enter position in the last N seconds before settlement (minimize price exposure)
+    # Entry allowed when seconds until settlement is between min and max
+    ENTRY_MIN_SECONDS_BEFORE: int = 1    # At least 1 second before (avoid race)
+    ENTRY_MAX_SECONDS_BEFORE: int = 10   # Up to 10 seconds before settlement
     
     # ==========================================================================
     # RISK MANAGEMENT
@@ -103,24 +104,23 @@ class FarmingConfig:
     # ==========================================================================
     # POSITION SIZING
     # ==========================================================================
-    # Fixed margin per position (USD)
-    MARGIN_USD: float = 2.0
+    # Margin as percentage of available futures wallet balance (e.g. 50 = 50%)
+    # Set via Railway variable MARGIN_PERCENTAGE - no default (required for opening positions)
+    MARGIN_PERCENTAGE: Optional[float] = field(
+        default_factory=lambda: (
+            lambda v: float(v) if v and str(v).strip() else None
+        )(os.getenv("MARGIN_PERCENTAGE"))
+    )
     
-    # Dynamic leverage range (5-10x based on funding rate)
-    MIN_LEVERAGE: int = 5
-    MAX_LEVERAGE: int = 10
+    # Leverage range (hardcoded 10x-25x)
+    MIN_LEVERAGE: int = 10
+    MAX_LEVERAGE: int = 25
     
-    # Use dynamic leverage (5-10x) based on funding rate
-    USE_MAX_LEVERAGE: bool = True
-    
-    # Fallback leverage if asset max is lower
-    DEFAULT_LEVERAGE: int = 5
+    # Minimum total order value (notional) in USD - position size scaled to meet this
+    MIN_ORDER_VALUE_USD: float = 7.0
     
     # Minimum 24h volume (USD) to avoid low liquidity slippage
     MIN_VOLUME_24H: float = 1_000_000
-    
-    # Fallback minimum order value for exchange min quantity checks
-    MIN_ORDER_VALUE_USD: float = 8.0
     
     # Maximum concurrent positions
     MAX_CONCURRENT_POSITIONS: int = 3
@@ -166,6 +166,10 @@ class FarmingConfig:
         warnings = []
         if not self.MUDREX_API_SECRET:
             warnings.append("MUDREX_API_SECRET not set - trading will not work")
+        if self.MARGIN_PERCENTAGE is None:
+            warnings.append("MARGIN_PERCENTAGE not set (set in Railway variables) - will not open new positions")
+        elif self.MARGIN_PERCENTAGE <= 0 or self.MARGIN_PERCENTAGE > 100:
+            warnings.append("MARGIN_PERCENTAGE must be between 1 and 100")
         if not self.TELEGRAM_BOT_TOKEN:
             warnings.append("TELEGRAM_BOT_TOKEN not set - notifications disabled")
         if not self.TELEGRAM_CHAT_ID:

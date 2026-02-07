@@ -16,6 +16,7 @@ In Railway dashboard, go to **Variables** tab and add:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `MUDREX_API_SECRET` | ✅ Yes | Your Mudrex API secret key |
+| `MARGIN_PERCENTAGE` | ✅ Yes | % of futures wallet to use as margin per position (e.g. 50) |
 | `TELEGRAM_BOT_TOKEN` | ✅ Yes | Telegram bot token from @BotFather |
 | `TELEGRAM_CHAT_ID` | ✅ Yes | Your Telegram chat ID |
 | `DRY_RUN` | Optional | Set to `true` to test without real trades |
@@ -29,6 +30,7 @@ Railway will automatically build and deploy when you push to main.
 ```bash
 # Required
 MUDREX_API_SECRET=your_mudrex_api_secret
+MARGIN_PERCENTAGE=50   # e.g. 50 = 50% of futures wallet per position
 
 # Telegram (required for notifications)
 TELEGRAM_BOT_TOKEN=your_bot_token
