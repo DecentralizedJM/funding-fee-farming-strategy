@@ -535,56 +535,55 @@ class StrategyEngine:
                 exit_price = ticker_data.get("lastPrice", position.entry_price)
                 current_funding_rate = ticker_data.get("fundingRate")
                 
-                # Verify funding was actually received (not just assume after 30s)
-                # Only for pre_settlement positions
                 now = datetime.now(timezone.utc)
+                entry_value = float(position.quantity) * position.entry_price
+                
+                # Verify funding (for record-keeping); can happen in background after 30s
                 if position.phase == "pre_settlement" and not position.funding_received and now > position.funding_settlement_time:
                     time_since = now - position.funding_settlement_time
                     if time_since >= timedelta(seconds=30):
-                        # Verify with API instead of assuming
                         settlement_ms = int(position.funding_settlement_time.timestamp() * 1000)
                         verification = self.fetcher.verify_funding_settlement(
                             position.symbol, settlement_ms
                         )
-                        
                         if verification and verification.get("verified"):
-                            # Use actual funding rate from API
                             actual_rate = verification["fundingRate"]
-                            entry_value = float(position.quantity) * position.entry_price
                             actual_funding = entry_value * abs(actual_rate)
                             self.position_manager.mark_funding_received(
-                                position.position_id, 
-                                funding_amount=actual_funding
+                                position.position_id, funding_amount=actual_funding
                             )
                             logger.info(f"Verified funding for {position.symbol}: actual rate={actual_rate*100:.4f}%, amount=${actual_funding:.4f}")
                         else:
-                            # Fall back to estimated if API verification fails
-                            entry_value = float(position.quantity) * position.entry_price
                             estimated_funding = entry_value * abs(position.expected_funding_rate)
                             self.position_manager.mark_funding_received(
-                                position.position_id,
-                                funding_amount=estimated_funding
+                                position.position_id, funding_amount=estimated_funding
                             )
                             logger.warning(f"Could not verify funding for {position.symbol}, using estimate: ${estimated_funding:.4f}")
                 
                 # ================================================================
-                # POST-SETTLEMENT: If in profit exit; else reverse and exit in profit
+                # POST-SETTLEMENT (soon after): If in profit exit; else MANDATORY reversal
+                # Run 10s after settlement so we don't wait for funding API (avoid stop loss closing first)
                 # ================================================================
+                seconds_after_settlement = (now - position.funding_settlement_time).total_seconds() if now > position.funding_settlement_time else 0
                 if (self.config.SETTLEMENT_REVERSAL_ENABLED and 
                     position.phase == "pre_settlement" and 
-                    position.funding_received):
+                    seconds_after_settlement >= self.config.REVERSAL_CHECK_SECONDS_AFTER_SETTLEMENT):
                     
-                    total_pnl = current_pnl + position.funding_amount
+                    # Use actual funding if verified, else estimate (so we can decide without waiting 30s)
+                    funding_for_pnl = position.funding_amount if position.funding_received else (entry_value * abs(position.expected_funding_rate))
+                    total_pnl = current_pnl + funding_for_pnl
+                    
                     if total_pnl > 0:
-                        # In profit after settlement - exit immediately, no reversal
+                        # In profit after settlement - exit, no reversal
+                        if not position.funding_received:
+                            self.position_manager.mark_funding_received(position.position_id, funding_amount=funding_for_pnl)
                         logger.info(f"Post-settlement profit for {position.symbol}: ${total_pnl:.4f} - exiting (no reversal)")
-                        success, realized_pnl, funding_amount = self.position_manager.execute_exit(
+                        success, realized_pnl, _ = self.position_manager.execute_exit(
                             position_id=position.position_id,
                             reason="Post-settlement profit exit",
                             exit_price=exit_price
                         )
                         if success:
-                            entry_value = float(position.quantity) * position.entry_price
                             pnl_percent = (realized_pnl / entry_value * 100) if entry_value > 0 else 0
                             self._record_trade_for_daily(realized_pnl, position.funding_amount)
                             self.notifier.notify_exit(
@@ -600,7 +599,10 @@ class StrategyEngine:
                             )
                         continue
                     else:
-                        # Not in profit - reverse and exit reversed leg in profit / max hold / SL
+                        # MANDATORY reversal when negative (or flat): close and open opposite
+                        if not position.funding_received:
+                            self.position_manager.mark_funding_received(position.position_id, funding_amount=funding_for_pnl)
+                        logger.info(f"Post-settlement negative/flat for {position.symbol}: total_pnl=${total_pnl:.4f} - mandatory reversal")
                         await self._execute_settlement_reversal(position, current_pnl, exit_price)
                         continue
                 

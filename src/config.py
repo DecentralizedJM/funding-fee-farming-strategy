@@ -101,6 +101,10 @@ class FarmingConfig:
     # Exit reversed position after this time regardless of PnL
     REVERSAL_MAX_HOLD_MINUTES: int = 3
     
+    # Seconds after settlement to run reversal decision (don't wait for funding API verification)
+    # 0 = check on first scan after settlement so mandatory reversal runs before stop loss
+    REVERSAL_CHECK_SECONDS_AFTER_SETTLEMENT: int = 0
+    
     # ==========================================================================
     # SAFETY CHECKS
     # ==========================================================================
