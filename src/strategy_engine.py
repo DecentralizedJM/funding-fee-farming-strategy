@@ -565,46 +565,20 @@ class StrategyEngine:
                 # Run 10s after settlement so we don't wait for funding API (avoid stop loss closing first)
                 # ================================================================
                 seconds_after_settlement = (now - position.funding_settlement_time).total_seconds() if now > position.funding_settlement_time else 0
+                # Only reverse after settlement time has passed (e.g. settlement 7:30 -> wait until 7:30:01)
+                # Ensures we never close/reverse before settlement; pre_settlement exits only on SL or rate reversal
                 if (self.config.SETTLEMENT_REVERSAL_ENABLED and 
                     position.phase == "pre_settlement" and 
                     seconds_after_settlement >= self.config.REVERSAL_CHECK_SECONDS_AFTER_SETTLEMENT):
                     
-                    # Use actual funding if verified, else estimate (so we can decide without waiting 30s)
+                    # ALWAYS reverse immediately after settlement (no "if profit exit")
+                    # Theory: after high settlement, direction often changes - capture it
                     funding_for_pnl = position.funding_amount if position.funding_received else (entry_value * abs(position.expected_funding_rate))
-                    total_pnl = current_pnl + funding_for_pnl
-                    
-                    if total_pnl > 0:
-                        # In profit after settlement - exit, no reversal
-                        if not position.funding_received:
-                            self.position_manager.mark_funding_received(position.position_id, funding_amount=funding_for_pnl)
-                        logger.info(f"Post-settlement profit for {position.symbol}: ${total_pnl:.4f} - exiting (no reversal)")
-                        success, realized_pnl, _ = self.position_manager.execute_exit(
-                            position_id=position.position_id,
-                            reason="Post-settlement profit exit",
-                            exit_price=exit_price
-                        )
-                        if success:
-                            pnl_percent = (realized_pnl / entry_value * 100) if entry_value > 0 else 0
-                            self._record_trade_for_daily(realized_pnl, position.funding_amount)
-                            self.notifier.notify_exit(
-                                symbol=position.symbol,
-                                side=position.side,
-                                entry_price=position.entry_price,
-                                exit_price=exit_price,
-                                pnl=realized_pnl,
-                                pnl_percent=pnl_percent,
-                                funding_received=position.funding_amount,
-                                reason="Post-settlement profit exit",
-                                hold_time=str(position.hold_duration).split('.')[0]
-                            )
-                        continue
-                    else:
-                        # MANDATORY reversal when negative (or flat): close and open opposite
-                        if not position.funding_received:
-                            self.position_manager.mark_funding_received(position.position_id, funding_amount=funding_for_pnl)
-                        logger.info(f"Post-settlement negative/flat for {position.symbol}: total_pnl=${total_pnl:.4f} - mandatory reversal")
-                        await self._execute_settlement_reversal(position, current_pnl, exit_price)
-                        continue
+                    if not position.funding_received:
+                        self.position_manager.mark_funding_received(position.position_id, funding_amount=funding_for_pnl)
+                    logger.info(f"Settlement done for {position.symbol}: reversing immediately (PnL+funding=${current_pnl + funding_for_pnl:.4f})")
+                    await self._execute_settlement_reversal(position, current_pnl, exit_price)
+                    continue
                 
                 # ================================================================
                 # NORMAL EXIT LOGIC

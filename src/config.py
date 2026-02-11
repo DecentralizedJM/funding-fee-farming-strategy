@@ -93,17 +93,17 @@ class FarmingConfig:
     # open opposite side to capture post-settlement price movement
     SETTLEMENT_REVERSAL_ENABLED: bool = True
     
-    # Profit target for reversed position (0.05% = 0.0005)
-    # Exit reversed position when profit >= this percentage
+    # Profit target for reversed position: % of MARGIN (0.05% = 0.0005)
+    # With leverage, same % on margin = higher ROI on position
     REVERSAL_PROFIT_TARGET_PERCENT: float = 0.0005
     
     # Maximum hold time for reversed position (minutes)
     # Exit reversed position after this time regardless of PnL
     REVERSAL_MAX_HOLD_MINUTES: int = 3
     
-    # Seconds after settlement to run reversal decision (don't wait for funding API verification)
-    # 0 = check on first scan after settlement so mandatory reversal runs before stop loss
-    REVERSAL_CHECK_SECONDS_AFTER_SETTLEMENT: int = 0
+    # Seconds after settlement time before reversing (e.g. settlement 7:30 -> reverse at 7:30:01+)
+    # Ensures exchange has applied settlement; avoid closing before settlement
+    REVERSAL_CHECK_SECONDS_AFTER_SETTLEMENT: int = 1
     
     # ==========================================================================
     # SAFETY CHECKS

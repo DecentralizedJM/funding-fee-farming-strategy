@@ -348,11 +348,11 @@ class PositionManager:
         if minutes_held >= reversal_max_hold_minutes:
             return True, f"Reversed max hold time: {minutes_held:.1f}m >= {reversal_max_hold_minutes}m"
         
-        # Check profit target
-        if entry_value > 0:
-            profit_percent = current_pnl / entry_value
-            if profit_percent >= reversal_profit_target_percent:
-                return True, f"Reversed profit target: {profit_percent*100:.4f}% >= {reversal_profit_target_percent*100:.4f}%"
+        # Check profit target: % of MARGIN (with leverage this gives higher ROI)
+        if margin > 0:
+            profit_margin_percent = current_pnl / margin
+            if profit_margin_percent >= reversal_profit_target_percent:
+                return True, f"Reversed profit target: {profit_margin_percent*100:.4f}% of margin >= {reversal_profit_target_percent*100:.4f}%"
         
         return False, "Reversed: Holding"
     
