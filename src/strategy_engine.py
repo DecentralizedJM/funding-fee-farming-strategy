@@ -693,20 +693,33 @@ class StrategyEngine:
         
         logger.info(f"Pre_settlement position closed. First leg PnL: ${first_leg_pnl:.4f}, Funding: ${first_leg_funding:.4f}")
         
-        # Step 2: Open the reversed position (opposite side)
-        result = self.executor.open_position(
-            symbol=symbol,
-            side=opposite_side,
-            quantity=position.quantity,
-            leverage=position.leverage,
-            stop_loss_price=sl_price
-        )
+        # Brief delay for exchange to settle margin (avoids "insufficient balance" on immediate open)
+        await asyncio.sleep(3)
         
-        if not result.success:
-            logger.error(f"Failed to open reversed position for {symbol}: {result.error}")
+        # Step 2: Open the reversed position (opposite side), with retries for 500/insufficient balance
+        result = None
+        for attempt in range(1, 4):
+            result = self.executor.open_position(
+                symbol=symbol,
+                side=opposite_side,
+                quantity=position.quantity,
+                leverage=position.leverage,
+                stop_loss_price=sl_price
+            )
+            if result.success:
+                break
+            # Retry on transient errors (500, insufficient balance = margin not settled yet)
+            if attempt < 3:
+                wait = 2 * attempt
+                logger.warning(f"Reversed open failed (attempt {attempt}/3): {result.error}. Retrying in {wait}s...")
+                await asyncio.sleep(wait)
+        
+        if not result or not result.success:
+            err_msg = result.error if result else "Unknown error"
+            logger.error(f"Failed to open reversed position for {symbol}: {err_msg}")
             self.notifier.notify_error(
                 "Reversal Failed",
-                f"{symbol}: Pre_settlement closed (PnL: ${first_leg_pnl:.4f}) but reversed open failed: {result.error}"
+                f"{symbol}: Pre_settlement closed (PnL: ${first_leg_pnl:.4f}) but reversed open failed: {err_msg}"
             )
             # Log the first leg as a standalone trade since reversal failed
             # The trade wasn't logged because skip_trade_log=True, so we need to manually record it
