@@ -47,11 +47,11 @@ class FarmingConfig:
     # Enter position in the last N seconds before settlement (minimize price exposure)
     # Entry allowed when seconds until settlement is between min and max
     ENTRY_MIN_SECONDS_BEFORE: int = 1    # At least 1 second before (avoid race)
-    ENTRY_MAX_SECONDS_BEFORE: int = 10   # Up to 10 seconds before settlement
+    ENTRY_MAX_SECONDS_BEFORE: int = 30   # Up to 30 seconds before settlement
     # When any opportunity has <= this many seconds to settlement, scan every ENTRY_FAST_SCAN_SECONDS
-    # so we don't miss the 1-10s window (normal 30s scan would skip past it)
+    # so we don't miss the entry window (normal 30s scan would skip past it)
     ENTRY_FAST_SCAN_WHEN_SECONDS_LEFT: int = 60
-    ENTRY_FAST_SCAN_SECONDS: int = 3
+    ENTRY_FAST_SCAN_SECONDS: int = 1
     
     # ==========================================================================
     # RISK MANAGEMENT
@@ -93,9 +93,9 @@ class FarmingConfig:
     # open opposite side to capture post-settlement price movement
     SETTLEMENT_REVERSAL_ENABLED: bool = True
     
-    # Profit target for reversed position: % of MARGIN (0.05% = 0.0005)
-    # With leverage, same % on margin = higher ROI on position
-    REVERSAL_PROFIT_TARGET_PERCENT: float = 0.0005
+    # Profit target for reversed position: % of MARGIN (0.2% = 0.002)
+    # Must clear round-trip fees (~0.12% of notional); with leverage this scales
+    REVERSAL_PROFIT_TARGET_PERCENT: float = 0.002
     
     # Maximum hold time for reversed position (minutes)
     # Exit reversed position after this time regardless of PnL
@@ -126,8 +126,8 @@ class FarmingConfig:
         )(os.getenv("MARGIN_PERCENTAGE"))
     )
     
-    # Leverage range (hardcoded 10x-25x)
-    MIN_LEVERAGE: int = 10
+    # Leverage range: auto-scales up to meet MIN_ORDER_VALUE_USD
+    MIN_LEVERAGE: int = 2
     MAX_LEVERAGE: int = 25
     
     # Minimum total order value (notional) in USD - position size scaled to meet this

@@ -58,8 +58,61 @@ class StrategyEngine:
         self._last_reconciliation = None
         self._reconciliation_interval = timedelta(minutes=5)
         
+        # Pre-fetched data caches (eliminates API latency in entry path)
+        self._symbol_available_cache: Dict[str, bool] = {}  # symbol -> available
+        self._instrument_cache: Dict[str, Optional[Dict]] = {}  # symbol -> info
+        self._cached_balance: Optional[float] = None
+        self._cache_ttl = timedelta(minutes=5)
+        self._symbol_cache_times: Dict[str, datetime] = {}
+        self._balance_cache_time: Optional[datetime] = None
+        
         logger.info("Strategy engine initialized")
     
+    def _get_cached_symbol_available(self, symbol: str) -> bool:
+        """Check symbol availability from cache, fetching if stale/missing."""
+        now = datetime.now(timezone.utc)
+        cached_time = self._symbol_cache_times.get(symbol)
+        if cached_time and (now - cached_time) < self._cache_ttl and symbol in self._symbol_available_cache:
+            return self._symbol_available_cache[symbol]
+        available = self.executor.check_symbol_available(symbol)
+        self._symbol_available_cache[symbol] = available
+        self._symbol_cache_times[symbol] = now
+        return available
+
+    def _get_cached_instrument_info(self, symbol: str) -> Optional[Dict]:
+        """Get instrument info from cache, fetching if stale/missing."""
+        now = datetime.now(timezone.utc)
+        cached_time = self._symbol_cache_times.get(f"inst_{symbol}")
+        if cached_time and (now - cached_time) < self._cache_ttl and symbol in self._instrument_cache:
+            return self._instrument_cache[symbol]
+        info = self.fetcher.get_instrument_info(symbol)
+        self._instrument_cache[symbol] = info
+        self._symbol_cache_times[f"inst_{symbol}"] = now
+        return info
+
+    def _get_cached_balance(self) -> Optional[float]:
+        """Get futures balance from cache, fetching if stale/missing."""
+        now = datetime.now(timezone.utc)
+        if self._balance_cache_time and (now - self._balance_cache_time) < self._cache_ttl and self._cached_balance is not None:
+            return self._cached_balance
+        balance = self.executor.get_futures_balance()
+        self._cached_balance = balance
+        self._balance_cache_time = now
+        return balance
+
+    def _prefetch_opportunity_data(self, opportunities: List[Dict]) -> None:
+        """Pre-fetch symbol availability, instrument info, and balance for upcoming opportunities.
+        Called when opportunities are detected but still outside the entry window,
+        so all data is warm in cache when the entry window opens."""
+        for opp in opportunities:
+            symbol = opp["symbol"]
+            if symbol not in self._symbol_available_cache:
+                self._get_cached_symbol_available(symbol)
+            if symbol not in self._instrument_cache:
+                self._get_cached_instrument_info(symbol)
+        if self._cached_balance is None or self._balance_cache_time is None:
+            self._get_cached_balance()
+
     def _notify_skip_throttled(self, symbol: str, reason: str) -> None:
         """Send skip notification if not sent recently"""
         now = datetime.now(timezone.utc)
@@ -106,8 +159,8 @@ class StrategyEngine:
                 # Manage existing positions (check exit conditions)
                 await self.manage_exits()
                 
-                # Adaptive sleep: when an opportunity is close to settlement, scan every few seconds
-                # so we don't miss the 1-10s entry window (30s scan would skip past it)
+                # Adaptive sleep: when an opportunity is close to settlement, scan every second
+                # so we don't miss the entry window (30s scan would skip past it)
                 if (min_seconds_to_settlement is not None and
                     0 < min_seconds_to_settlement <= self.config.ENTRY_FAST_SCAN_WHEN_SECONDS_LEFT):
                     sleep_seconds = self.config.ENTRY_FAST_SCAN_SECONDS
@@ -248,6 +301,9 @@ class StrategyEngine:
         
         logger.info(f"Found {len(opportunities)} extreme funding opportunities")
         
+        # Pre-fetch symbol/instrument/balance data so it's cached when entry window opens
+        self._prefetch_opportunity_data(opportunities)
+        
         min_seconds_to_settlement: Optional[float] = None
         
         # Filter to entry window and execute
@@ -316,43 +372,32 @@ class StrategyEngine:
     
     async def _execute_entry(self, opportunity: Dict) -> bool:
         """
-        Execute entry for a funding opportunity
-        
-        Args:
-            opportunity: Opportunity dict from scanner
-        
-        Returns:
-            True if entry was successful
+        Execute entry for a funding opportunity.
+        Uses pre-cached data to minimize API latency in the critical entry path.
         """
         symbol = opportunity["symbol"]
         side = opportunity["recommendedSide"]
         funding_rate = opportunity["fundingRate"]
         price = opportunity["lastPrice"]
+        mark_price = opportunity.get("markPrice", price)
         next_funding_time = opportunity["nextFundingTime"]
         
         time_to_settlement = self.fetcher.get_time_to_next_settlement(next_funding_time)
         
         logger.info(f"Attempting entry: {symbol} {side} @ rate {funding_rate*100:.4f}%")
         
-        # Check if symbol is available on Mudrex (skip if not)
-        if not self.executor.check_symbol_available(symbol):
+        # Use cached symbol availability (pre-fetched in scan_and_enter)
+        if not self._get_cached_symbol_available(symbol):
             logger.warning(f"Symbol {symbol} not available on Mudrex - skipping")
             return False
-            
-        # --- SIDE CHECK (Safety Verification) ---
-        # Verify Mark Price vs Last Price spread
-        tickers = self.fetcher.get_tickers([symbol])
-        ticker_data = tickers.get(symbol, {})
-        mark_price = ticker_data.get("markPrice", price)
-        last_price = ticker_data.get("lastPrice", price)
         
-        if last_price > 0:
-            spread_percent = abs(mark_price - last_price) / last_price
+        # Price spread check using data already in the opportunity dict (no extra API call)
+        if price > 0:
+            spread_percent = abs(mark_price - price) / price
             if spread_percent > self.config.PRICE_SPREAD_THRESHOLD:
-                logger.warning(f"Entry rejected: Price spread too high ({spread_percent*100:.2f}% > {self.config.PRICE_SPREAD_THRESHOLD*100:.2f}%) Mark: {mark_price}, Last: {last_price}")
+                logger.warning(f"Entry rejected: Price spread too high ({spread_percent*100:.2f}%) Mark: {mark_price}, Last: {price}")
                 return False
         
-        # Notify opportunity
         self.notifier.notify_opportunity_detected(
             symbol=symbol,
             funding_rate=funding_rate,
@@ -361,13 +406,12 @@ class StrategyEngine:
             price=price
         )
         
-        # Margin percentage must be set (e.g. via Railway variable MARGIN_PERCENTAGE)
         if self.config.MARGIN_PERCENTAGE is None or self.config.MARGIN_PERCENTAGE <= 0 or self.config.MARGIN_PERCENTAGE > 100:
             logger.warning("MARGIN_PERCENTAGE not set or invalid (use 1-100) - skipping entry")
             return False
         
-        # Get futures balance and compute margin from percentage
-        balance = self.executor.get_futures_balance()
+        # Use cached balance (pre-fetched in scan_and_enter)
+        balance = self._get_cached_balance()
         if balance is None or balance <= 0:
             logger.warning(f"Cannot get futures balance or balance is zero - skipping {symbol}")
             return False
@@ -376,19 +420,17 @@ class StrategyEngine:
         min_order = self.config.MIN_ORDER_VALUE_USD
         min_lev, max_lev = self.config.MIN_LEVERAGE, self.config.MAX_LEVERAGE
         
-        # Need notional >= min_order. At max leverage: margin_usd * max_lev >= min_order
         if margin_usd * max_lev < min_order:
             logger.warning(
                 f"Insufficient margin for {symbol}: ${margin_usd:.2f} * {max_lev}x = ${margin_usd * max_lev:.2f} < ${min_order}. Need at least ${min_order / max_lev:.2f} margin."
             )
             return False
         
-        # Scale leverage to meet min order value: leverage >= min_order / margin_usd, clamp 10-25
         leverage_needed = math.ceil(min_order / margin_usd) if margin_usd > 0 else max_lev
         leverage = max(min_lev, min(max_lev, leverage_needed))
         
-        # Clamp to asset max leverage
-        instrument_info = self.fetcher.get_instrument_info(symbol)
+        # Use cached instrument info (pre-fetched in scan_and_enter)
+        instrument_info = self._get_cached_instrument_info(symbol)
         if instrument_info:
             max_asset = int(instrument_info.get("maxLeverage", 100))
             leverage = min(leverage, max_asset)
@@ -396,7 +438,6 @@ class StrategyEngine:
                 logger.warning(f"Asset {symbol} max leverage {max_asset} < min {min_lev}x - skipping")
                 return False
         
-        # Calculate position size (notional = margin_usd * leverage, must be >= min_order)
         quantity = self.executor.calculate_position_size(
             symbol=symbol,
             price=price,
@@ -414,28 +455,20 @@ class StrategyEngine:
             logger.warning(f"Position notional ${notional:.2f} < min ${min_order} for {symbol} - skipping")
             return False
 
-        # Calculate Stop Loss Price based on Bybit LTP
-        # Mudrex SL triggers on LTP (not mark price), so we use Bybit lastPrice
+        # SL based on Bybit LTP (Mudrex SL triggers on LTP, not mark price)
         price_stop_percent = self.config.STOP_LOSS_PERCENT / leverage
-        sl_price = None
         if side == "LONG":
-            sl_price_val = price * (1 - price_stop_percent)
-            sl_price = f"{sl_price_val:.4f}"
+            sl_price = f"{price * (1 - price_stop_percent):.4f}"
         else:
-            sl_price_val = price * (1 + price_stop_percent)
-            sl_price = f"{sl_price_val:.4f}"
+            sl_price = f"{price * (1 + price_stop_percent):.4f}"
 
-        # Re-check timing before placing order (execution can take time)
-        # If we're no longer in the entry window, abort to avoid missing settlement
-        time_to_settlement = self.fetcher.get_time_to_next_settlement(next_funding_time)
-        seconds_remaining = time_to_settlement.total_seconds()
-        min_seconds = float(self.config.ENTRY_MIN_SECONDS_BEFORE)
-        
-        if seconds_remaining < min_seconds:
-            logger.warning(f"Entry aborted: Only {seconds_remaining:.0f}s until settlement (min: {min_seconds:.0f}s). Would miss funding.")
+        # Only abort if settlement has already passed (not just "close to it")
+        seconds_remaining = self.fetcher.get_time_to_next_settlement(next_funding_time).total_seconds()
+        if seconds_remaining < 0:
+            logger.warning(f"Entry aborted: Settlement already passed ({seconds_remaining:.0f}s ago)")
             return False
 
-        # Execute trade
+        # Execute trade (single API call -- everything else was pre-cached)
         result = self.executor.open_position(
             symbol=symbol,
             side=side,
@@ -684,6 +717,10 @@ class StrategyEngine:
             return
         
         logger.info(f"Pre_settlement position closed. First leg PnL: ${first_leg_pnl:.4f}, Funding: ${first_leg_funding:.4f}")
+        
+        # Invalidate balance cache (margin just freed from closed position)
+        self._balance_cache_time = None
+        self._cached_balance = None
         
         # Brief delay for exchange to settle margin
         await asyncio.sleep(3)
