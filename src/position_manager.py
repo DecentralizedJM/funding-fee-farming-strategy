@@ -382,8 +382,11 @@ class PositionManager:
             logger.warning(f"Position {position_id} not found in local state")
             return False, 0.0, 0.0
         
-        # Get current PnL before closing (snapshot)
-        current_pnl = self.executor.get_position_pnl(position_id) or 0.0
+        # Calculate PnL from exit_price (bot-side, using Bybit LTP - not Mudrex which is stale)
+        actual_exit = exit_price or position.entry_price
+        qty = float(position.quantity)
+        direction = 1.0 if position.side == "LONG" else -1.0
+        current_pnl = (actual_exit - position.entry_price) * qty * direction
         
         # Close the position via API
         success = self.executor.close_position(position_id)
@@ -391,45 +394,36 @@ class PositionManager:
         # --- ERROR HANDLING: Check for "Position Not Open" / 404 ---
         if not success:
             logger.warning(f"Close failed for {position_id}. Verifying if position still exists...")
-            # Double check if position is actually open on exchange
             open_positions = self.executor.get_open_positions()
             is_open_on_exchange = any(p["position_id"] == position_id for p in open_positions)
             
             if not is_open_on_exchange:
                 logger.warning(f"Position {position_id} not found on exchange. Assuming closed externally/liquidated.")
-                # Force success to clear local state
                 success = True
                 reason = f"{reason} (Force Close: Not found on exchange)"
         
         if success:
-            # Update position record
             position.exit_time = datetime.now(timezone.utc)
-            position.exit_price = exit_price or position.entry_price
+            position.exit_price = actual_exit
             position.exit_reason = reason
             
             # Calculate realized PnL based on position phase
             if position.phase == "reversed":
-                # For reversed positions: combine first leg + current leg PnL
                 first_leg_total = position.first_leg_pnl + position.first_leg_funding
                 position.realized_pnl = first_leg_total + current_pnl
                 logger.info(f"Reversed position {position_id} combined PnL: first_leg=${first_leg_total:.4f} + current=${current_pnl:.4f} = ${position.realized_pnl:.4f}")
             else:
-                # For pre_settlement positions: current PnL + funding
                 position.realized_pnl = current_pnl + position.funding_amount
             
-            # Store the values to return
             realized_pnl = position.realized_pnl
             funding_amount = position.funding_amount
             
-            # Log completed trade (unless skipped for settlement reversal)
             if not skip_trade_log:
                 trade_record = position.to_dict()
                 self.completed_trades.append(trade_record)
                 self._log_trade(trade_record)
             
-            # Remove from active positions
             del self.positions[position_id]
-            
             self.save_state()
             
             logger.info(f"Position {position_id} closed: {reason}, PnL: ${realized_pnl:.4f}")

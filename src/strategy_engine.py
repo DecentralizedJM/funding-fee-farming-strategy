@@ -174,12 +174,17 @@ class StrategyEngine:
             
             for position in local_positions:
                 if position.position_id not in exchange_position_ids:
-                    # Position exists locally but not on exchange - likely liquidated/closed
                     logger.warning(f"Reconciliation: Position {position.position_id} ({position.symbol}) not found on exchange. Cleaning up.")
+                    
+                    # Fetch LTP from Bybit for accurate PnL on cleanup
+                    tickers = self.fetcher.get_tickers([position.symbol])
+                    ticker_data = tickers.get(position.symbol, {})
+                    recon_price = ticker_data.get("lastPrice", position.entry_price)
                     
                     success, _, _ = self.position_manager.execute_exit(
                         position_id=position.position_id,
-                        reason="Reconciliation: Position closed/liquidated on exchange"
+                        reason="Reconciliation: Position closed/liquidated on exchange",
+                        exit_price=recon_price
                     )
                     
                     # Notify about the discrepancy
@@ -409,9 +414,8 @@ class StrategyEngine:
             logger.warning(f"Position notional ${notional:.2f} < min ${min_order} for {symbol} - skipping")
             return False
 
-        # Calculate Stop Loss Price (critical for avoiding liquidation with high leverage)
-        # Note: Exchange stop loss is price-based. Convert margin-based stop loss to price move.
-        # With leverage, STOP_LOSS_PERCENT of margin = STOP_LOSS_PERCENT/leverage of price
+        # Calculate Stop Loss Price based on Bybit LTP
+        # Mudrex SL triggers on LTP (not mark price), so we use Bybit lastPrice
         price_stop_percent = self.config.STOP_LOSS_PERCENT / leverage
         sl_price = None
         if side == "LONG":
@@ -510,30 +514,32 @@ class StrategyEngine:
         
         for position in positions:
             try:
-                # Get current PnL
-                current_pnl = self.executor.get_position_pnl(position.position_id)
+                # Get current market data from Bybit (single source of truth for prices)
+                tickers = self.fetcher.get_tickers([position.symbol])
+                ticker_data = tickers.get(position.symbol, {})
+                ltp = ticker_data.get("lastPrice", position.entry_price)
+                exit_price = ltp
+                current_funding_rate = ticker_data.get("fundingRate")
                 
-                # If PnL fetch failed (None), check if position still exists
-                if current_pnl is None:
-                    logger.warning(f"Could not fetch PnL for {position.position_id}. strict-checking existence...")
+                # Calculate PnL from Bybit LTP (not Mudrex - which was stale)
+                # PnL = (ltp - entry_price) * quantity * direction
+                qty = float(position.quantity)
+                direction = 1.0 if position.side == "LONG" else -1.0
+                current_pnl = (ltp - position.entry_price) * qty * direction
+                
+                # Verify position still exists on Mudrex (periodic check)
+                if not ticker_data:
+                    logger.warning(f"No Bybit ticker for {position.symbol}. Checking if position exists on exchange...")
                     open_positions = self.executor.get_open_positions()
                     is_open = any(p["position_id"] == position.position_id for p in open_positions)
-                    
                     if not is_open:
                         logger.warning(f"Position {position.position_id} confirmed missing. Closing locally.")
                         success, _, _ = self.position_manager.execute_exit(
                             position_id=position.position_id,
-                            reason="Force Close: Missing on exchange"
+                            reason="Force Close: Missing on exchange",
+                            exit_price=ltp
                         )
                         continue
-                    else:
-                        current_pnl = 0.0 # Default to 0 if temporary API error but position exists
-                
-                # Get current market data
-                tickers = self.fetcher.get_tickers([position.symbol])
-                ticker_data = tickers.get(position.symbol, {})
-                exit_price = ticker_data.get("lastPrice", position.entry_price)
-                current_funding_rate = ticker_data.get("fundingRate")
                 
                 now = datetime.now(timezone.utc)
                 entry_value = float(position.quantity) * position.entry_price
@@ -561,22 +567,17 @@ class StrategyEngine:
                             logger.warning(f"Could not verify funding for {position.symbol}, using estimate: ${estimated_funding:.4f}")
                 
                 # ================================================================
-                # POST-SETTLEMENT (soon after): If in profit exit; else MANDATORY reversal
-                # Run 10s after settlement so we don't wait for funding API (avoid stop loss closing first)
+                # POST-SETTLEMENT: MANDATORY reversal (always reverse, no conditions)
                 # ================================================================
                 seconds_after_settlement = (now - position.funding_settlement_time).total_seconds() if now > position.funding_settlement_time else 0
-                # Only reverse after settlement time has passed (e.g. settlement 7:30 -> wait until 7:30:01)
-                # Ensures we never close/reverse before settlement; pre_settlement exits only on SL or rate reversal
                 if (self.config.SETTLEMENT_REVERSAL_ENABLED and 
                     position.phase == "pre_settlement" and 
                     seconds_after_settlement >= self.config.REVERSAL_CHECK_SECONDS_AFTER_SETTLEMENT):
                     
-                    # ALWAYS reverse immediately after settlement (no "if profit exit")
-                    # Theory: after high settlement, direction often changes - capture it
                     funding_for_pnl = position.funding_amount if position.funding_received else (entry_value * abs(position.expected_funding_rate))
                     if not position.funding_received:
                         self.position_manager.mark_funding_received(position.position_id, funding_amount=funding_for_pnl)
-                    logger.info(f"Settlement done for {position.symbol}: reversing immediately (PnL+funding=${current_pnl + funding_for_pnl:.4f})")
+                    logger.info(f"Settlement done for {position.symbol}: mandatory reversal (PnL=${current_pnl:.4f}, funding=${funding_for_pnl:.4f})")
                     await self._execute_settlement_reversal(position, current_pnl, exit_price)
                     continue
                 
@@ -662,25 +663,16 @@ class StrategyEngine:
         """
         symbol = position.symbol
         original_position_id = position.position_id
+        opposite_side = "SHORT" if position.side == "LONG" else "LONG"
         
         logger.info(f"Executing settlement reversal for {symbol}")
-        
-        # Calculate stop loss price for reversed position (opposite side)
-        opposite_side = "SHORT" if position.side == "LONG" else "LONG"
-        price_stop_percent = self.config.STOP_LOSS_PERCENT / position.leverage
-        
-        if opposite_side == "LONG":
-            sl_price_val = exit_price * (1 - price_stop_percent)
-        else:
-            sl_price_val = exit_price * (1 + price_stop_percent)
-        sl_price = f"{sl_price_val:.4f}"
         
         # Step 1: Close the pre_settlement position (skip trade log - will be logged with reversed)
         success, first_leg_pnl, first_leg_funding = self.position_manager.execute_exit(
             position_id=original_position_id,
             reason="Settlement reversal",
             exit_price=exit_price,
-            skip_trade_log=True  # Don't log yet, will log combined PnL when reversed closes
+            skip_trade_log=True
         )
         
         if not success:
@@ -693,10 +685,23 @@ class StrategyEngine:
         
         logger.info(f"Pre_settlement position closed. First leg PnL: ${first_leg_pnl:.4f}, Funding: ${first_leg_funding:.4f}")
         
-        # Brief delay for exchange to settle margin (avoids "insufficient balance" on immediate open)
+        # Brief delay for exchange to settle margin
         await asyncio.sleep(3)
         
-        # Step 2: Open the reversed position (opposite side), with retries for 500/insufficient balance
+        # Re-fetch fresh LTP from Bybit for accurate SL on the reversed position
+        tickers = self.fetcher.get_tickers([symbol])
+        ticker_data = tickers.get(symbol, {})
+        fresh_ltp = ticker_data.get("lastPrice", exit_price)
+        
+        # SL based on fresh LTP (Mudrex SL triggers on LTP, not mark price)
+        price_stop_percent = self.config.STOP_LOSS_PERCENT / position.leverage
+        if opposite_side == "LONG":
+            sl_price_val = fresh_ltp * (1 - price_stop_percent)
+        else:
+            sl_price_val = fresh_ltp * (1 + price_stop_percent)
+        sl_price = f"{sl_price_val:.4f}"
+        
+        # Step 2: Open the reversed position (opposite side), with retries
         result = None
         for attempt in range(1, 4):
             result = self.executor.open_position(
@@ -708,7 +713,6 @@ class StrategyEngine:
             )
             if result.success:
                 break
-            # Retry on transient errors (500, insufficient balance = margin not settled yet)
             if attempt < 3:
                 wait = 2 * attempt
                 logger.warning(f"Reversed open failed (attempt {attempt}/3): {result.error}. Retrying in {wait}s...")
@@ -732,7 +736,7 @@ class StrategyEngine:
             symbol=symbol,
             side=opposite_side,
             quantity=position.quantity,
-            entry_price=result.entry_price or exit_price,
+            entry_price=result.entry_price or fresh_ltp,
             leverage=position.leverage,
             expected_funding_rate=0.0,  # No funding expected for reversed position
             funding_settlement_time=position.funding_settlement_time,  # Keep original for reference
