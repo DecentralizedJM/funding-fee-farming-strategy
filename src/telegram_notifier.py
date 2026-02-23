@@ -3,6 +3,7 @@ Telegram Notification Client
 ============================
 
 Sends notifications for trade entries, exits, and alerts.
+Supports multi-account: each account has its own chat ID(s); notifications are sent per account.
 """
 
 import logging
@@ -14,37 +15,45 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramNotifier:
-    """Send trading notifications via Telegram to one or more chat IDs"""
+    """
+    Send trading notifications via Telegram.
+    chat_ids_by_account: List of chat-ID lists, one per account. Notifications for account i go to chat_ids_by_account[i].
+    """
     
-    def __init__(self, bot_token: str, chat_ids: Union[str, List[str]]):
+    def __init__(self, bot_token: str, chat_ids_by_account: Union[List[List[str]], List[str], str]):
         self.bot_token = bot_token
-        if isinstance(chat_ids, str):
-            self.chat_ids = [x.strip() for x in chat_ids.split(",") if x.strip()]
+        # Normalize to List[List[str]]: one list of chat IDs per account
+        if isinstance(chat_ids_by_account, str):
+            ids = [x.strip() for x in chat_ids_by_account.split(",") if x.strip()]
+            self.chat_ids_by_account = [ids] if ids else []
+        elif isinstance(chat_ids_by_account, list) and len(chat_ids_by_account) > 0 and isinstance(chat_ids_by_account[0], list):
+            self.chat_ids_by_account = [list(a) for a in chat_ids_by_account]
         else:
-            self.chat_ids = list(chat_ids) if chat_ids else []
-        self.enabled = bool(bot_token and self.chat_ids)
+            ids = list(chat_ids_by_account) if chat_ids_by_account else []
+            self.chat_ids_by_account = [ids] if ids else []
+        all_ids = [cid for acc in self.chat_ids_by_account for cid in acc]
+        self.enabled = bool(bot_token and all_ids)
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
+        self._n_accounts = len(self.chat_ids_by_account)
         
         if not self.enabled:
             logger.warning("Telegram notifications disabled - missing bot token or chat ID(s)")
     
-    def send_message(self, message: str, parse_mode: str = "HTML") -> bool:
+    def send_message(self, message: str, parse_mode: str = "HTML", account_index: Optional[int] = None) -> bool:
         """
-        Send a message to all configured chat IDs.
-        
-        Args:
-            message: Message text
-            parse_mode: HTML or Markdown
-        
-        Returns:
-            True if sent to at least one chat successfully
+        Send a message. If account_index is set, send only to that account's chat IDs; else to all.
         """
         if not self.enabled:
             logger.debug(f"Telegram disabled, would send: {message[:100]}...")
             return False
         
+        if account_index is not None and 0 <= account_index < self._n_accounts:
+            target_ids = self.chat_ids_by_account[account_index]
+        else:
+            target_ids = [cid for acc in self.chat_ids_by_account for cid in acc]
+        
         any_ok = False
-        for chat_id in self.chat_ids:
+        for chat_id in target_ids:
             try:
                 url = f"{self.base_url}/sendMessage"
                 payload = {
@@ -74,13 +83,12 @@ class TelegramNotifier:
         funding_rate: float,
         recommended_side: str,
         time_to_settlement: str,
-        price: float
+        price: float,
+        account_index: Optional[int] = None
     ) -> bool:
-        """Notify about a detected funding opportunity"""
-        
+        """Notify about a detected funding opportunity (optionally for one account)."""
         rate_emoji = "🔴" if funding_rate < 0 else "🟢"
         direction = "Shorts Pay Longs" if funding_rate < 0 else "Longs Pay Shorts"
-        
         message = f"""
 🎯 <b>FUNDING OPPORTUNITY DETECTED</b>
 
@@ -92,8 +100,8 @@ class TelegramNotifier:
 
 🎲 <b>Recommended:</b> Open <code>{recommended_side}</code>
 """
-        return self.send_message(message.strip())
-    
+        return self.send_message(message.strip(), account_index=account_index)
+
     def notify_entry(
         self,
         symbol: str,
@@ -102,12 +110,10 @@ class TelegramNotifier:
         entry_price: float,
         leverage: int,
         expected_funding_rate: float,
-        position_id: str
+        position_id: str,
+        account_index: Optional[int] = None
     ) -> bool:
-        """Notify about trade entry"""
-        
         side_emoji = "🟢" if side == "LONG" else "🔴"
-        
         message = f"""
 📈 <b>POSITION OPENED</b>
 
@@ -120,8 +126,8 @@ class TelegramNotifier:
 
 🆔 Position: <code>{position_id[:16]}...</code>
 """
-        return self.send_message(message.strip())
-    
+        return self.send_message(message.strip(), account_index=account_index)
+
     def notify_exit(
         self,
         symbol: str,
@@ -132,13 +138,11 @@ class TelegramNotifier:
         pnl_percent: float,
         funding_received: float,
         reason: str,
-        hold_time: str
+        hold_time: str,
+        account_index: Optional[int] = None
     ) -> bool:
-        """Notify about trade exit"""
-        
         pnl_emoji = "💰" if pnl >= 0 else "💸"
         result = "PROFIT" if pnl >= 0 else "LOSS"
-        
         message = f"""
 📉 <b>POSITION CLOSED</b>
 
@@ -153,8 +157,8 @@ class TelegramNotifier:
 📝 Reason: {reason}
 ⏱ Hold Time: {hold_time}
 """
-        return self.send_message(message.strip())
-    
+        return self.send_message(message.strip(), account_index=account_index)
+
     def notify_reversal_opened(
         self,
         symbol: str,
@@ -163,14 +167,12 @@ class TelegramNotifier:
         first_leg_pnl: float,
         first_leg_funding: float,
         entry_price: float,
-        position_id: str
+        position_id: str,
+        account_index: Optional[int] = None
     ) -> bool:
-        """Notify about settlement reversal - position flipped to opposite side"""
-        
         first_leg_total = first_leg_pnl + first_leg_funding
         first_leg_emoji = "💰" if first_leg_total >= 0 else "💸"
         side_emoji = "🟢" if reversed_side == "LONG" else "🔴"
-        
         message = f"""
 🔄 <b>SETTLEMENT REVERSAL</b>
 
@@ -187,11 +189,9 @@ class TelegramNotifier:
 
 ⏳ Waiting for profit target or max hold time...
 """
-        return self.send_message(message.strip())
-    
-    def notify_error(self, error_type: str, details: str) -> bool:
-        """Notify about errors"""
-        
+        return self.send_message(message.strip(), account_index=account_index)
+
+    def notify_error(self, error_type: str, details: str, account_index: Optional[int] = None) -> bool:
         message = f"""
 ⚠️ <b>ERROR</b>
 
@@ -199,11 +199,10 @@ class TelegramNotifier:
 <b>Details:</b> {details}
 <b>Time:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC
 """
-        return self.send_message(message.strip())
-    
+        return self.send_message(message.strip(), account_index=account_index)
+
     def notify_startup(self, config_summary: str) -> bool:
-        """Notify about bot startup"""
-        
+        """Startup: send to all accounts (account_index=None)."""
         message = f"""
 🚀 <b>FUNDING FEE FARMER STARTED</b>
 
@@ -212,18 +211,16 @@ class TelegramNotifier:
 ⏰ Started: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC
 """
         return self.send_message(message.strip())
-    
+
     def notify_daily_summary(
         self,
         trades_count: int,
         total_pnl: float,
         total_funding: float,
-        win_rate: float
+        win_rate: float,
+        account_index: Optional[int] = None
     ) -> bool:
-        """Send daily performance summary"""
-        
         pnl_emoji = "📈" if total_pnl >= 0 else "📉"
-        
         message = f"""
 📊 <b>DAILY SUMMARY</b>
 
@@ -234,13 +231,12 @@ class TelegramNotifier:
 
 📅 {datetime.utcnow().strftime('%Y-%m-%d')}
 """
-        return self.send_message(message.strip())
+        return self.send_message(message.strip(), account_index=account_index)
 
-    def notify_skipped(self, symbol: str, reason: str) -> bool:
-        """Notify about skipped opportunity"""
+    def notify_skipped(self, symbol: str, reason: str, account_index: Optional[int] = None) -> bool:
         message = f"""
 🚫 <b>SKIPPED: {symbol}</b>
 
 Reason: {reason}
 """
-        return self.send_message(message.strip())
+        return self.send_message(message.strip(), account_index=account_index)

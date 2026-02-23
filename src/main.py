@@ -69,38 +69,36 @@ def main():
         logger.info(f"  - Margin: {config.MARGIN_PERCENTAGE or 'NOT SET'}% of futures balance, Leverage: {config.MIN_LEVERAGE}-{config.MAX_LEVERAGE}x")
         logger.info(f"  - Max Positions: {config.MAX_CONCURRENT_POSITIONS}")
         logger.info(f"  - Min Order: ${config.MIN_ORDER_VALUE_USD}")
-        logger.info(f"  - Telegram: {'Enabled' if config.TELEGRAM_BOT_TOKEN else 'Disabled'} ({len(config.TELEGRAM_CHAT_IDS)} chat(s))")
-        logger.info(f"  - Mudrex API: {'Configured' if config.MUDREX_API_SECRET else 'NOT SET'}")
+        account_configs = config.get_account_configs()
+        if not account_configs:
+            logger.error("No account configs: set MUDREX_API_SECRET or MUDREX_API_SECRET_1, etc.")
+            sys.exit(1)
+        all_chat_ids = [cid for _secret, chat_ids in account_configs for cid in chat_ids]
+        logger.info(f"  - Telegram: {'Enabled' if config.TELEGRAM_BOT_TOKEN else 'Disabled'} ({len(all_chat_ids)} chat(s) across {len(account_configs)} account(s))")
+        logger.info(f"  - Mudrex API: {len(account_configs)} account(s) configured")
         
-        # Initialize strategy engine
-        engine = StrategyEngine(config)
-        
-        # Initialize telegram command handler
+        engine = StrategyEngine(config, account_configs)
         cmd_handler = TelegramCommandHandler(
             bot_token=config.TELEGRAM_BOT_TOKEN,
-            chat_ids=config.TELEGRAM_CHAT_IDS
+            chat_ids=all_chat_ids
         )
         
-        # Set up command callbacks
         def get_status():
             uptime = datetime.now(timezone.utc) - start_time
             hours, remainder = divmod(int(uptime.total_seconds()), 3600)
             minutes, seconds = divmod(remainder, 60)
-            
-            return {
-                "running": engine.running,
-                "active_positions": engine.position_manager.get_active_count(),
-                "max_positions": config.MAX_CONCURRENT_POSITIONS,
-                "uptime": f"{hours}h {minutes}m {seconds}s",
-                "last_scan": "Every 30s"
-            }
+            status = engine.get_status()
+            status["uptime"] = f"{hours}h {minutes}m {seconds}s"
+            status["last_scan"] = "Every 30s"
+            return status
         
         def get_stats():
-            perf = engine.position_manager.get_performance_stats()
+            # First account stats for /stats reply (whoever ran the command)
+            perf = engine.position_managers[0].get_performance_stats() if engine.position_managers else {}
             return {
-                "daily_trades": engine._daily_trades,
-                "daily_pnl": engine._daily_pnl,
-                "daily_funding": engine._daily_funding,
+                "daily_trades": engine._daily_trades[0] if engine._daily_trades else 0,
+                "daily_pnl": engine._daily_pnl[0] if engine._daily_pnl else 0.0,
+                "daily_funding": engine._daily_funding[0] if engine._daily_funding else 0.0,
                 "total_trades": perf.get("total_trades", 0),
                 "win_rate": perf.get("win_rate", 0),
                 "total_pnl": perf.get("total_pnl", 0),

@@ -7,10 +7,13 @@ All configurable parameters for the Funding Fee Farming Strategy.
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Max number of API accounts (MUDREX_API_SECRET_1 .. _10)
+MAX_ACCOUNTS = 10
 
 
 @dataclass
@@ -20,17 +23,45 @@ class FarmingConfig:
     # ==========================================================================
     # API CREDENTIALS
     # ==========================================================================
+    # Single account (legacy): MUDREX_API_SECRET
     MUDREX_API_SECRET: str = field(default_factory=lambda: os.getenv("MUDREX_API_SECRET", ""))
     
-    # Telegram notifications (comma-separated chat IDs for multiple recipients)
+    # Multi-account: MUDREX_API_SECRET_1, MUDREX_API_SECRET_2, ... MUDREX_API_SECRET_10
+    # Secret_1 is primary; 2..10 are friends' accounts. Same strategy runs for each.
+    
+    # Telegram: one token for all
     TELEGRAM_BOT_TOKEN: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
+    # Legacy single-account: TELEGRAM_CHAT_ID (comma-separated)
     TELEGRAM_CHAT_ID: str = field(default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID", ""))
     
     @property
     def TELEGRAM_CHAT_IDS(self) -> List[str]:
-        """Parse TELEGRAM_CHAT_ID into list (comma-separated)."""
+        """Parse TELEGRAM_CHAT_ID into list (comma-separated). Legacy single-account."""
         raw = (self.TELEGRAM_CHAT_ID or "").strip()
         return [x.strip() for x in raw.split(",") if x.strip()]
+    
+    def get_account_configs(self) -> List[Tuple[str, List[str]]]:
+        """
+        Return list of (api_secret, chat_ids) for each configured account.
+        - If MUDREX_API_SECRET_1 is set: use _1.._10 (each TELEGRAM_CHAT_ID_i for account i).
+        - Else: single account (MUDREX_API_SECRET, TELEGRAM_CHAT_IDS).
+        """
+        configs = []
+        for i in range(1, MAX_ACCOUNTS + 1):
+            secret = (os.getenv(f"MUDREX_API_SECRET_{i}") or "").strip()
+            if not secret:
+                continue
+            raw_chat = (os.getenv(f"TELEGRAM_CHAT_ID_{i}", "") or "").strip()
+            chat_ids = [x.strip() for x in raw_chat.split(",") if x.strip()]
+            if not chat_ids and self.TELEGRAM_CHAT_IDS:
+                chat_ids = self.TELEGRAM_CHAT_IDS  # fallback to legacy for account 1
+            configs.append((secret, chat_ids))
+        if configs:
+            return configs
+        # Legacy: single account
+        if self.MUDREX_API_SECRET and self.TELEGRAM_CHAT_IDS:
+            return [(self.MUDREX_API_SECRET, self.TELEGRAM_CHAT_IDS)]
+        return []
     
     # ==========================================================================
     # FUNDING RATE THRESHOLDS
@@ -178,16 +209,22 @@ class FarmingConfig:
     def validate(self):
         """Validate settings and return warnings (non-blocking)"""
         warnings = []
-        if not self.MUDREX_API_SECRET:
-            warnings.append("MUDREX_API_SECRET not set - trading will not work")
+        account_configs = self.get_account_configs()
+        if not account_configs:
+            if not self.MUDREX_API_SECRET:
+                warnings.append("MUDREX_API_SECRET not set - set it or MUDREX_API_SECRET_1 for multi-account")
+            if not self.TELEGRAM_CHAT_IDS and not any(os.getenv(f"TELEGRAM_CHAT_ID_{i}") for i in range(1, MAX_ACCOUNTS + 1)):
+                warnings.append("TELEGRAM_CHAT_ID or TELEGRAM_CHAT_ID_1..10 not set - notifications disabled")
+        else:
+            for i, (secret, chat_ids) in enumerate(account_configs):
+                if not chat_ids:
+                    warnings.append(f"Account {i + 1}: TELEGRAM_CHAT_ID_{i + 1} not set - no notifications for this account")
         if self.MARGIN_PERCENTAGE is None:
             warnings.append("MARGIN_PERCENTAGE not set (set in Railway variables) - will not open new positions")
         elif self.MARGIN_PERCENTAGE <= 0 or self.MARGIN_PERCENTAGE > 100:
             warnings.append("MARGIN_PERCENTAGE must be between 1 and 100")
         if not self.TELEGRAM_BOT_TOKEN:
             warnings.append("TELEGRAM_BOT_TOKEN not set - notifications disabled")
-        if not self.TELEGRAM_CHAT_IDS:
-            warnings.append("TELEGRAM_CHAT_ID not set (comma-separated for multiple) - notifications disabled")
         return warnings
     
     @property
