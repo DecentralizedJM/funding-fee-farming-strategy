@@ -2,7 +2,7 @@
 
 **Designed for Mudrex Futures**
 
-An automated trading bot that farms extreme funding fees by detecting opportunities and opening opposing positions before settlement.
+An automated trading bot that farms extreme funding fees by detecting opportunities and entering opposing positions before settlement.
 
 ---
 
