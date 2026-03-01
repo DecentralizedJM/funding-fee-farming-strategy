@@ -106,9 +106,11 @@ Example with $2 margin and 10x leverage:
 │  ┌─────────────────┐                              ┌─────────────────────┐   │
 │  │    Bybit API    │                              │     Mudrex API      │   │
 │  │  • Funding Rates│                              │   • Open Position   │   │
-│  │  • Instrument   │                              │   • Close Position  │   │
-│  │  • History      │                              │   • Get PnL         │   │
-│  └─────────────────┘                              └─────────────────────┘   │
+│  │  • LTP / Price  │                              │   • Close Position  │   │
+│  │  • Instrument   │  (PnL & SL use Bybit LTP;   │   (Execution only;   │   │
+│  │  • History      │   Mudrex PnL is stale)       │   Mudrex SL/TP use  │   │
+│  └─────────────────┘                              │   LTP, not mark)    │   │
+│                                                    └─────────────────────┘   │
 │                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                              DATA LAYER                                     │
@@ -128,6 +130,16 @@ Example with $2 margin and 10x leverage:
 | **Trade Executor** | Executes trades via Mudrex API with position sizing and stop loss calculation |
 | **Position Manager** | Tracks positions, handles margin-based exit logic, persists state |
 | **Telegram Notifier** | Sends alerts for entries, exits, errors, and daily summaries |
+
+### Data Sources: Bybit vs Mudrex
+
+| Use Case | Source | Notes |
+|----------|--------|-------|
+| **Funding rates, prices, LTP** | Bybit | Single source of truth for market data |
+| **PnL calculation** | Bot (Bybit LTP) | `(ltp - entry_price) × qty × direction` — Mudrex PnL is stale |
+| **SL/TP prices** | Bybit LTP | Mudrex SL/TP trigger on LTP, not mark price |
+| **Order execution** | Mudrex | Open/close positions only |
+| **Funding settlement** | Bybit verify API | Confirms funding was credited |
 
 ---
 

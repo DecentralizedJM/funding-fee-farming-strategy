@@ -4,6 +4,10 @@ Trade Executor
 
 Executes trades via Mudrex API.
 Designed for Mudrex Futures trading.
+
+Important: Mudrex SL/TP trigger on LTP (Last Traded Price), not mark price.
+Mudrex PnL in API responses is stale. The bot calculates PnL from Bybit LTP
+and never uses Mudrex unrealized_pnl for strategy decisions.
 """
 
 import logging
@@ -327,10 +331,8 @@ class TradeExecutor:
     @retry_api_call(max_retries=3, delay=1.0)
     def get_open_positions(self) -> List[Dict]:
         """
-        Get all open positions
-        
-        Returns:
-            List of position dicts
+        Get all open positions. Note: unrealized_pnl from Mudrex is stale.
+        Strategy uses Bybit LTP for PnL: (ltp - entry_price) * qty * direction.
         """
         if not self.client:
             return []
@@ -358,13 +360,8 @@ class TradeExecutor:
     @retry_api_call(max_retries=3, delay=1.0)
     def get_position_pnl(self, position_id: str) -> Optional[float]:
         """
-        Get current PnL of a position
-        
-        Args:
-            position_id: Position ID
-        
-        Returns:
-            Unrealized PnL or None
+        Get PnL from Mudrex. DEPRECATED for strategy use - Mudrex PnL is stale.
+        Use Bybit LTP to calculate PnL: (ltp - entry_price) * qty * direction.
         """
         if not self.client:
             return None

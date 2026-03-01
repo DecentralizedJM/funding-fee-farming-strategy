@@ -58,7 +58,6 @@ class StrategyEngine:
         self._daily_funding: List[float] = [0.0] * self._n_accounts
         
         self._paused = False
-        self._skip_notification_cache = {}
         self._last_reconciliation = None
         self._reconciliation_interval = timedelta(minutes=5)
         
@@ -125,24 +124,10 @@ class StrategyEngine:
             if self._cached_balance[i] is None or self._balance_cache_time[i] is None:
                 self._get_cached_balance(i)
 
-    def _notify_skip_throttled(self, symbol: str, reason: str, account_index: Optional[int] = None) -> None:
-        """Send skip notification at most once per symbol per hour."""
-        now = datetime.now(timezone.utc)
-        last_entry = self._skip_notification_cache.get(symbol)
-        if last_entry:
-            _, last_time = last_entry
-            if (now - last_time) < timedelta(hours=1):
-                return
-        self.notifier.notify_skipped(symbol, reason, account_index=account_index)
-        self._skip_notification_cache[symbol] = (reason, now)
-        logger.debug(f"Sent skip notification for {symbol}: {reason}")
-    
     async def run(self) -> None:
         """Main strategy loop"""
         self.running = True
         
-        # Send startup notification
-        self._notify_startup()
         
         # Initialize daily tracking
         self._last_summary_date = datetime.now(timezone.utc).date()
@@ -178,7 +163,7 @@ class StrategyEngine:
                 
             except Exception as e:
                 logger.error(f"Error in main loop: {e}", exc_info=True)
-                self.notifier.notify_error("Main Loop Error", str(e))
+                logger.error(f"Main loop error: {e}")
                 await asyncio.sleep(60)  # Wait a bit before retrying
     
     async def _check_daily_summary(self) -> None:
@@ -187,16 +172,8 @@ class StrategyEngine:
         
         if self._last_summary_date and today > self._last_summary_date:
             for account_index in range(self._n_accounts):
-                stats = self.position_managers[account_index].get_performance_stats()
-                self.notifier.notify_daily_summary(
-                    trades_count=self._daily_trades[account_index],
-                    total_pnl=self._daily_pnl[account_index],
-                    total_funding=self._daily_funding[account_index],
-                    win_rate=stats.get("win_rate", 0.0),
-                    account_index=account_index
-                )
                 logger.info(
-                    f"Daily summary sent (account {account_index + 1}): {self._daily_trades[account_index]} trades, ${self._daily_pnl[account_index]:.4f} PnL"
+                    f"Daily summary (account {account_index + 1}): {self._daily_trades[account_index]} trades, ${self._daily_pnl[account_index]:.4f} PnL"
                 )
             # Reset daily counters for all accounts
             self._daily_trades = [0] * self._n_accounts
@@ -245,11 +222,7 @@ class StrategyEngine:
                             exit_price=recon_price
                         )
                         if success:
-                            self.notifier.notify_error(
-                                "Position Reconciliation",
-                                f"{position.symbol} position was closed/liquidated externally",
-                                account_index=account_index
-                            )
+                            logger.warning(f"Position {position.symbol} closed/liquidated externally (account {account_index + 1})")
                 logger.debug(
                     f"Position reconciliation complete (account {account_index + 1}): {len(local_positions)} local, {len(exchange_positions)} on exchange"
                 )
@@ -308,8 +281,6 @@ class StrategyEngine:
                     logger.info(f"Skipping {opp['symbol']}: {reason}")
                 else:
                     logger.debug(f"Skipping {opp['symbol']}: {reason}")
-                if self.config.NOTIFY_SKIPS:
-                    self._notify_skip_throttled(opp["symbol"], reason, account_index=None)
                 continue
 
             # In entry window: try each account
@@ -327,8 +298,6 @@ class StrategyEngine:
                 if opp["symbol"] in active_symbols:
                     reason = "Already have active position"
                     logger.info(f"Skipping {opp['symbol']} (account {account_index + 1}): {reason}")
-                    if self.config.NOTIFY_SKIPS:
-                        self._notify_skip_throttled(opp["symbol"], reason, account_index=account_index)
                     continue
                 await self._execute_entry(opp, account_index)
 
@@ -385,15 +354,6 @@ class StrategyEngine:
                 logger.warning(f"Entry rejected: Price spread too high ({spread_percent*100:.2f}%) Mark: {mark_price}, Last: {price}")
                 return False
         
-        self.notifier.notify_opportunity_detected(
-            symbol=symbol,
-            funding_rate=funding_rate,
-            recommended_side=side,
-            time_to_settlement=str(time_to_settlement).split('.')[0],
-            price=price,
-            account_index=account_index
-        )
-        
         if self.config.MARGIN_PERCENTAGE is None or self.config.MARGIN_PERCENTAGE <= 0 or self.config.MARGIN_PERCENTAGE > 100:
             logger.warning("MARGIN_PERCENTAGE not set or invalid (use 1-100) - skipping entry")
             return False
@@ -442,7 +402,7 @@ class StrategyEngine:
             logger.warning(f"Position notional ${notional:.2f} < min ${min_order} for {symbol} - skipping")
             return False
 
-        # SL based on Bybit LTP (Mudrex SL triggers on LTP, not mark price)
+        # SL from Bybit LTP - Mudrex SL/TP trigger on LTP, not mark price
         price_stop_percent = self.config.STOP_LOSS_PERCENT / leverage
         if side == "LONG":
             sl_price = f"{price * (1 - price_stop_percent):.4f}"
@@ -504,11 +464,7 @@ class StrategyEngine:
                     exit_price=actual_entry
                 )
                 if success:
-                    self.notifier.notify_error(
-                        "Slippage Protection",
-                        f"{symbol}: Entry slippage {slippage*100:.3f}% exceeded max {self.config.MAX_SLIPPAGE_PERCENT*100:.3f}%. Position closed.",
-                        account_index=account_index
-                    )
+                    logger.warning(f"Slippage protection: {symbol} closed (slippage {slippage*100:.3f}% > max {self.config.MAX_SLIPPAGE_PERCENT*100:.3f}%)")
                 return False
             self.notifier.notify_entry(
                 symbol=symbol,
@@ -523,7 +479,6 @@ class StrategyEngine:
             logger.info(f"Entry successful (account {account_index + 1}): {symbol} {side} qty={quantity} leverage={leverage}x slippage={slippage*100:.3f}%")
             return True
         logger.error(f"Entry failed (account {account_index + 1}): {result.error}")
-        self.notifier.notify_error("Entry Failed", f"{symbol}: {result.error}", account_index=account_index)
         return False
     
     async def manage_exits(self) -> None:
@@ -659,19 +614,14 @@ class StrategyEngine:
             skip_trade_log=True
         )
         if not success:
-            logger.error(f"Failed to close pre_settlement position {original_position_id} for reversal")
-            self.notifier.notify_error(
-                "Reversal Failed",
-                f"{symbol}: Could not close pre_settlement position",
-                account_index=account_index
-            )
+            logger.error(f"Failed to close pre_settlement position {original_position_id} for reversal: {symbol}")
             return
         logger.info(f"Pre_settlement position closed. First leg PnL: ${first_leg_pnl:.4f}, Funding: ${first_leg_funding:.4f}")
         self._invalidate_balance_cache(account_index)
         await asyncio.sleep(3)
         tickers = self.fetcher.get_tickers([symbol])
         ticker_data = tickers.get(symbol, {})
-        fresh_ltp = ticker_data.get("lastPrice", exit_price)
+        fresh_ltp = ticker_data.get("lastPrice", exit_price)  # LTP - Mudrex SL triggers on LTP
         price_stop_percent = self.config.STOP_LOSS_PERCENT / position.leverage
         if opposite_side == "LONG":
             sl_price_val = fresh_ltp * (1 - price_stop_percent)
@@ -696,11 +646,6 @@ class StrategyEngine:
         if not result or not result.success:
             err_msg = result.error if result else "Unknown error"
             logger.error(f"Failed to open reversed position for {symbol}: {err_msg}")
-            self.notifier.notify_error(
-                "Reversal Failed",
-                f"{symbol}: Pre_settlement closed (PnL: ${first_leg_pnl:.4f}) but reversed open failed: {err_msg}",
-                account_index=account_index
-            )
             self._record_trade_for_daily(account_index, first_leg_pnl, first_leg_funding)
             return
         reversed_position = FarmingPosition(
@@ -730,20 +675,6 @@ class StrategyEngine:
             position_id=result.position_id,
             account_index=account_index
         )
-    
-    def _notify_startup(self) -> None:
-        """Send startup notification with config summary"""
-        
-        config_summary = f"""
-<b>Mode:</b> LIVE
-<b>Threshold:</b> {self.config.EXTREME_RATE_THRESHOLD * 100:.2f}%
-<b>Entry Window:</b> last {self.config.ENTRY_MIN_SECONDS_BEFORE}-{self.config.ENTRY_MAX_SECONDS_BEFORE}s
-<b>Max Positions:</b> {self.config.MAX_CONCURRENT_POSITIONS}
-<b>Margin:</b> {self.config.MARGIN_PERCENTAGE or 'NOT SET'}% of futures balance
-<b>Leverage:</b> {self.config.MIN_LEVERAGE}-{self.config.MAX_LEVERAGE}x
-<b>Min Order:</b> ${self.config.MIN_ORDER_VALUE_USD}
-"""
-        self.notifier.notify_startup(config_summary.strip())
     
     def get_status(self) -> dict:
         """Get current strategy status (aggregated across accounts)."""
