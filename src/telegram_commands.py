@@ -170,19 +170,53 @@ class TelegramCommandHandler:
         if self._on_status:
             status = self._on_status()
             
-            running_emoji = "🟢 LIVE" if status.get("running") else "🔴 PAUSED"
+            # LIVE = running and not paused; PAUSED = paused or stopped
+            is_live = status.get("running") and not status.get("paused", False)
+            running_emoji = "🟢 LIVE" if is_live else "🔴 PAUSED"
             
-            message = f"""
-📊 <b>BOT STATUS</b>
+            msg_lines = [
+                "📊 <b>BOT STATUS</b>",
+                "",
+                f"<b>Status:</b> {running_emoji}",
+                f"<b>Active Positions:</b> {status.get('active_positions', 0)}/{status.get('max_positions', 3)}",
+                f"<b>Accounts:</b> {status.get('accounts', 1)}",
+                f"<b>Mode:</b> {'DRY RUN' if status.get('dry_run') else 'LIVE TRADING'}",
+                "",
+                f"<b>Uptime:</b> {status.get('uptime', 'N/A')}",
+                f"<b>Scan:</b> {status.get('last_scan', 'N/A')}",
+            ]
+            # Watchlist (symbols queued for post-settlement entry)
+            wl_count = status.get("watchlist_count", 0)
+            wl_syms = status.get("watchlist_symbols")
+            if wl_count > 0 and wl_syms:
+                msg_lines.extend([
+                    "",
+                    f"📋 <b>Watchlist:</b> {wl_count} ({wl_syms})",
+                ])
 
-<b>Status:</b> {running_emoji}
-<b>Active Positions:</b> {status.get('active_positions', 0)}/{status.get('max_positions', 3)}
-<b>Mode:</b> {'DRY RUN' if status.get('dry_run') else 'LIVE TRADING'}
-
-<b>Uptime:</b> {status.get('uptime', 'N/A')}
-<b>Last Scan:</b> {status.get('last_scan', 'N/A')}
-"""
-            self._send_message(chat_id, message.strip())
+            # Opportunities + countdown
+            secs = status.get("seconds_to_settlement")
+            opp_count = status.get("opportunity_count", 0)
+            if opp_count > 0 and secs is not None:
+                mins = int(abs(secs) // 60)
+                sec_rem = int(abs(secs) % 60)
+                countdown = f"{mins}m {sec_rem}s" if mins >= 1 else f"{int(abs(secs))}s"
+                if secs > 0:
+                    msg_lines.extend([
+                        "",
+                        "⏱️ <b>NEXT SETTLEMENT</b>",
+                        f"<b>Opportunities:</b> {opp_count} ({status.get('opportunity_symbols', '')})",
+                        f"<b>Countdown:</b> {countdown} ⏳",
+                        f"<b>Entry:</b> after settlement (post-settlement momentum)",
+                    ])
+                else:
+                    msg_lines.extend([
+                        "",
+                        f"⏱️ <b>Settlement passed {countdown} ago — entry window</b>",
+                    ])
+            elif opp_count == 0:
+                msg_lines.extend(["", "⏱️ No extreme-rate opportunities right now"])
+            self._send_message(chat_id, "\n".join(msg_lines))
         else:
             self._send_message(chat_id, "⚠️ Status callback not configured")
     

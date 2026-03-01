@@ -73,67 +73,50 @@ class FarmingConfig:
     VERY_EXTREME_THRESHOLD: float = 0.01  # 1%
     
     # ==========================================================================
-    # ENTRY TIMING
+    # ENTRY TIMING (Post-Settlement Momentum)
     # ==========================================================================
-    # Enter position in the last N seconds before settlement (minimize price exposure)
-    # Entry allowed when seconds until settlement is between min and max
-    ENTRY_MIN_SECONDS_BEFORE: int = 5    # At least 5 seconds before settlement
-    ENTRY_MAX_SECONDS_BEFORE: int = 300  # Up to 5 minutes before settlement
-    # When any opportunity has <= this many seconds to settlement, scan every ENTRY_FAST_SCAN_SECONDS
-    ENTRY_FAST_SCAN_WHEN_SECONDS_LEFT: int = 600  # Fast-scan within 10 minutes of settlement
-    ENTRY_FAST_SCAN_SECONDS: int = 3               # Every 3s in fast mode
+    # Strategy: enter AFTER settlement, riding the post-settlement momentum.
+    # Empirical data shows price continues moving in the trend direction after
+    # settlement (e.g. -0.7% avg in 5 min for negative-funding assets).
+    
+    # Wait this many seconds after settlement before entering (let order book settle)
+    POST_SETTLEMENT_DELAY_SECONDS: int = 10
+    # Enter within this many seconds after settlement (entry window closes after this)
+    POST_SETTLEMENT_WINDOW_SECONDS: int = 120
+    
+    # Pre-settlement watchlist: start tracking symbols this many seconds before settlement
+    WATCHLIST_SECONDS_BEFORE_SETTLEMENT: int = 600
+    
+    # Fast scan: every N seconds when near settlement (before and after)
+    FAST_SCAN_WHEN_SECONDS_LEFT: int = 600
+    FAST_SCAN_SECONDS: int = 3
     
     # ==========================================================================
     # RISK MANAGEMENT
     # ==========================================================================
-    # Stop loss percentage of MARGIN (not notional) - e.g. 0.05 = 5% of margin at risk
-    # With $2 margin, 5% stop loss = $0.10 max loss before exit
-    # Previously was 0.5% of notional which was 10x too tight with leverage
-    STOP_LOSS_PERCENT: float = 0.05
+    # Stop loss: percentage of NOTIONAL position value
+    # Data shows 5-min range around settlement averages 1.2% for high-rate assets
+    STOP_LOSS_PERCENT: float = 0.005  # 0.5% of notional
     
-    # Maximum daily loss in USD
+    # Maximum daily loss in USD (across all trades)
     MAX_DAILY_LOSS_USD: float = 10.0
     
     # ==========================================================================
-    # EXIT TIMING & STRATEGY
+    # EXIT STRATEGY (Momentum-based)
     # ==========================================================================
+    # Data shows avg post-settlement move of 0.7-0.9% in 5-30 min for extreme rates.
+    # Strategy: capture the bulk of the move with trailing stop.
     
-    # 1. Trailing Stop (Let winners run)
+    # Take profit: exit if PnL reaches this % of notional
+    TAKE_PROFIT_PERCENT: float = 0.008  # 0.8%
+    
+    # Trailing stop: let winners run, lock in gains
     TRAILING_STOP_ENABLED: bool = True
-    # Activate trailing stop when profit > 0.1%
-    TRAILING_ACTIVATION_PERCENT: float = 0.001 
-    # Exit if profit drops 0.02% from peak
-    TRAILING_CALLBACK_PERCENT: float = 0.0002 
+    TRAILING_ACTIVATION_PERCENT: float = 0.003  # Activate at 0.3% profit
+    TRAILING_CALLBACK_PERCENT: float = 0.002    # Exit if drops 0.2% from peak
     
-    # 2. Base Targets
-    # Minimum profit percentage to exit (after fees)
-    MIN_PROFIT_PERCENT: float = 0.05  # 0.05%
-    
-    # Safety cap: force exit if still open this long after settlement
-    MAX_HOLD_MINUTES_AFTER_SETTLEMENT: int = 5
-    
-    # "Soft Loss" Exit: Exit if loss is small (second ideal - avoids larger losses)
-    # Exit if total PnL (including funding) > this threshold (e.g. -0.2% = small loss)
-    SOFT_LOSS_EXIT_PERCENT: float = -0.002
-    
-    # ==========================================================================
-    # SETTLEMENT REVERSAL STRATEGY
-    # ==========================================================================
-    # Enable settlement reversal: after funding settlement, close position and 
-    # open opposite side to capture post-settlement price movement
-    SETTLEMENT_REVERSAL_ENABLED: bool = True
-    
-    # Profit target for reversed position: % of MARGIN (0.2% = 0.002)
-    # Must clear round-trip fees (~0.12% of notional); with leverage this scales
-    REVERSAL_PROFIT_TARGET_PERCENT: float = 0.002
-    
-    # Maximum hold time for reversed position (minutes)
-    # Exit reversed position after this time regardless of PnL
-    REVERSAL_MAX_HOLD_MINUTES: int = 3
-    
-    # Seconds after settlement time before reversing (e.g. settlement 7:30 -> reverse at 7:30:01+)
-    # Ensures exchange has applied settlement; avoid closing before settlement
-    REVERSAL_CHECK_SECONDS_AFTER_SETTLEMENT: int = 1
+    # Hard time limit: force exit if still open after this many minutes
+    MAX_HOLD_MINUTES: int = 15
     
     # ==========================================================================
     # SAFETY CHECKS
@@ -228,12 +211,8 @@ class FarmingConfig:
     
     @property
     def total_fee_percent(self) -> float:
-        """Total fees for entry + exit"""
+        """Total fees for entry + exit (taker + slippage, round-trip)"""
         return (self.TAKER_FEE_PERCENT + self.SLIPPAGE_BUFFER_PERCENT) * 2
-    
-    def min_profitable_rate(self) -> float:
-        """Minimum funding rate needed to be profitable after fees"""
-        return self.total_fee_percent + self.MIN_PROFIT_PERCENT
 
 # Don't create global instance - let main.py create it after env vars are loaded
 # config = FarmingConfig()

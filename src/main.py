@@ -65,7 +65,10 @@ def main():
         
         logger.info(f"Configuration loaded:")
         logger.info(f"  - Rate Threshold: {config.EXTREME_RATE_THRESHOLD * 100:.2f}%")
-        logger.info(f"  - Entry Window: last {config.ENTRY_MIN_SECONDS_BEFORE}-{config.ENTRY_MAX_SECONDS_BEFORE}s before settlement")
+        logger.info(
+            f"  - Entry: {config.POST_SETTLEMENT_DELAY_SECONDS}-"
+            f"{config.POST_SETTLEMENT_WINDOW_SECONDS}s AFTER settlement (momentum)"
+        )
         logger.info(f"  - Margin: {config.MARGIN_PERCENTAGE or 'NOT SET'}% of futures balance, Leverage: {config.MIN_LEVERAGE}-{config.MAX_LEVERAGE}x")
         logger.info(f"  - Max Positions: {config.MAX_CONCURRENT_POSITIONS}")
         logger.info(f"  - Min Order: ${config.MIN_ORDER_VALUE_USD}")

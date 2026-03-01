@@ -162,199 +162,59 @@ class PositionManager:
         self,
         position: FarmingPosition,
         current_pnl: float,
-        current_funding_rate: Optional[float] = None,
-        min_profit_percent: float = 0.05,
+        take_profit_percent: float = 0.008,
         stop_loss_percent: float = 0.005,
-        soft_loss_percent: float = -0.002,
         trailing_stop_enabled: bool = True,
-        trailing_activation_percent: float = 0.001,
-        trailing_callback_percent: float = 0.0002,
-        max_hold_minutes: int = 30,
-        # Settlement reversal parameters
-        settlement_reversal_enabled: bool = False,
-        reversal_profit_target_percent: float = 0.0005,
-        reversal_max_hold_minutes: int = 3
+        trailing_activation_percent: float = 0.003,
+        trailing_callback_percent: float = 0.002,
+        max_hold_minutes: int = 15,
     ) -> Tuple[bool, str]:
         """
-        Determine if position should exit.
-        
-        For pre_settlement phase (when reversal enabled):
-        - Only exit on stop loss or funding rate reversal
-        - Settlement reversal is triggered by strategy_engine, not here
-        
-        For pre_settlement phase (when reversal disabled - legacy behavior):
-        - Exit on profit, small loss, stop loss, or max hold after settlement
-        
-        For reversed phase:
-        - Exit on profit target, max hold time, or stop loss
-        - No funding-based logic
-        
-        Args:
-            position: The position to check
-            current_pnl: Current unrealized PnL
-            current_funding_rate: Current funding rate (for reversal check)
-            min_profit_percent: Minimum profit to exit (not used in current logic)
-            stop_loss_percent: Stop loss percentage (hard stop - prevents liquidation)
-            soft_loss_percent: Soft loss threshold (exit if total PnL > this after funding)
-            max_hold_minutes: Maximum hold time after settlement (safety cap)
-            settlement_reversal_enabled: Whether settlement reversal mode is active
-            reversal_profit_target_percent: Profit target for reversed position
-            reversal_max_hold_minutes: Max hold time for reversed position
-        
+        Momentum exit logic.  All thresholds are percentage of NOTIONAL value.
+
+        Exit conditions (checked in order):
+        1. Stop loss
+        2. Take profit
+        3. Trailing stop (activated once pnl > activation threshold)
+        4. Max hold time
+
         Returns:
             Tuple of (should_exit, reason)
         """
-        now = datetime.now(timezone.utc)
-        
-        # Calculate common values
         entry_value = float(position.quantity) * position.entry_price
-        margin = entry_value / position.leverage if position.leverage > 0 else entry_value
-        
-        # ========================================================================
-        # REVERSED PHASE: Different exit logic for the second leg
-        # ========================================================================
-        if position.phase == "reversed":
-            return self._should_exit_reversed(
-                position=position,
-                current_pnl=current_pnl,
-                entry_value=entry_value,
-                margin=margin,
-                stop_loss_percent=stop_loss_percent,
-                reversal_profit_target_percent=reversal_profit_target_percent,
-                reversal_max_hold_minutes=reversal_max_hold_minutes
-            )
-        
-        # ========================================================================
-        # PRE_SETTLEMENT PHASE: Original position
-        # ========================================================================
-        
-        # Check Stop Loss (Always active) - Bug #3 fix: use margin, not notional
-        if margin > 0:
-            # Calculate loss as percentage of margin at risk (not notional value)
-            # With 10x leverage, $0.10 loss on $2 margin = 5% margin loss
-            pnl_percent_of_margin = current_pnl / margin
-            if pnl_percent_of_margin <= -stop_loss_percent:
-                return True, f"Stop loss triggered: {pnl_percent_of_margin*100:.2f}% of margin <= -{stop_loss_percent*100:.2f}%"
-        
-        # Check Funding Rate Reversal (Always active)
-        # Bug #5 fix: Use relative threshold instead of absolute 0.01%
-        # Only exit if rate truly reversed (crossed zero) by significant amount
-        if current_funding_rate is not None:
-            original_rate = position.expected_funding_rate
-            # Minimum threshold: rate must exceed 0.1% OR 50% of original rate magnitude
-            min_reversal = max(0.001, abs(original_rate) * 0.5)
-            
-            # Long position: was receiving (rate < 0), now paying if rate > threshold
-            if position.side == "LONG" and current_funding_rate > min_reversal:
-                return True, f"Funding rate reversal: {current_funding_rate*100:.4f}% (was {original_rate*100:.4f}%, Longs now pay)"
-            # Short position: was receiving (rate > 0), now paying if rate < -threshold
-            if position.side == "SHORT" and current_funding_rate < -min_reversal:
-                return True, f"Funding rate reversal: {current_funding_rate*100:.4f}% (was {original_rate*100:.4f}%, Shorts now pay)"
-        
-        # Check if settlement has occurred
-        if now < position.funding_settlement_time:
-            return False, "Waiting for settlement"
-        
-        # Calculate time since settlement (used in multiple places)
-        time_since_settlement = position.time_since_settlement or timedelta(seconds=0)
-        minutes_held = time_since_settlement.total_seconds() / 60
-        
-        # ========================================================================
-        # SETTLEMENT REVERSAL MODE: Don't exit on profit/loss, let engine trigger reversal
-        # ========================================================================
-        if settlement_reversal_enabled:
-            # When reversal mode is enabled, we only exit pre_settlement positions on:
-            # 1. Stop loss (checked above)
-            # 2. Funding rate reversal (checked above)
-            # The actual settlement reversal (close + open opposite) is triggered 
-            # by strategy_engine when funding_received is True, NOT here.
-            # 
-            # Safety: Still apply hard time limit as a safety net
-            if minutes_held >= max_hold_minutes:
-                return True, f"Max hold time exceeded (reversal mode): {minutes_held:.1f}m"
-            
-            return False, "Holding for settlement reversal"
-        
-        # ========================================================================
-        # LEGACY MODE (reversal disabled): Original exit logic
-        # ========================================================================
-        
-        # Note: Funding verification is now handled by strategy_engine (with API verification)
-        # This function just checks the funding_received flag that strategy_engine sets
+        if entry_value <= 0:
+            return True, "Invalid entry value"
 
-        # Safety: Hard time limit (always check, regardless of funding status)
-        # This was Bug #1 - previously inside funding_received block making it impossible
+        pnl_pct = current_pnl / entry_value
+
+        # 1. Stop loss
+        if pnl_pct <= -stop_loss_percent:
+            return True, f"Stop loss: {pnl_pct*100:.3f}% <= -{stop_loss_percent*100:.3f}%"
+
+        # 2. Take profit
+        if pnl_pct >= take_profit_percent:
+            return True, f"Take profit: {pnl_pct*100:.3f}% >= {take_profit_percent*100:.3f}%"
+
+        # 3. Trailing stop
+        if trailing_stop_enabled:
+            if pnl_pct > position.highest_pnl_percent:
+                position.highest_pnl_percent = pnl_pct
+                self.save_state()
+
+            if position.highest_pnl_percent >= trailing_activation_percent:
+                drawdown = position.highest_pnl_percent - pnl_pct
+                if drawdown >= trailing_callback_percent:
+                    return True, (
+                        f"Trailing stop: peak {position.highest_pnl_percent*100:.3f}%, "
+                        f"now {pnl_pct*100:.3f}%, drawdown {drawdown*100:.3f}%"
+                    )
+
+        # 4. Max hold time
+        minutes_held = position.hold_duration.total_seconds() / 60
         if minutes_held >= max_hold_minutes:
-            return True, f"Max hold time exceeded: {minutes_held:.1f}m"
-
-        # Exit strategy after funding received: prioritize profit, then small loss
-        if position.funding_received:
-            # Use actual funding_amount (not estimated) - fixes Bug #2 double-counting
-            funding_amount = position.funding_amount
-            total_pnl = current_pnl + funding_amount
-            profit_percent = (total_pnl / entry_value) if entry_value > 0 else 0
-
-            # IDEAL: Exit if in profit (any profit is good)
-            if profit_percent > 0:
-                return True, f"Profit Exit: {profit_percent*100:.3f}% > 0%"
-
-            # SECOND IDEAL: Exit if loss is small (soft loss threshold)
-            # This prevents holding through larger losses while still giving chance for recovery
-            if profit_percent > soft_loss_percent:
-                return True, f"Small Loss Exit: {profit_percent*100:.3f}% > {soft_loss_percent*100:.3f}%"
+            return True, f"Max hold time: {minutes_held:.1f}m >= {max_hold_minutes}m"
 
         return False, "Holding"
-    
-    def _should_exit_reversed(
-        self,
-        position: FarmingPosition,
-        current_pnl: float,
-        entry_value: float,
-        margin: float,
-        stop_loss_percent: float,
-        reversal_profit_target_percent: float,
-        reversal_max_hold_minutes: int
-    ) -> Tuple[bool, str]:
-        """
-        Determine if a reversed position should exit.
-        
-        Exit conditions for reversed position:
-        1. Profit target reached
-        2. Max hold time exceeded
-        3. Stop loss triggered
-        
-        Args:
-            position: The reversed position to check
-            current_pnl: Current unrealized PnL
-            entry_value: Position notional value
-            margin: Position margin
-            stop_loss_percent: Stop loss percentage of margin
-            reversal_profit_target_percent: Profit target percentage
-            reversal_max_hold_minutes: Max hold time in minutes
-        
-        Returns:
-            Tuple of (should_exit, reason)
-        """
-        # Check Stop Loss (Always active)
-        if margin > 0:
-            pnl_percent_of_margin = current_pnl / margin
-            if pnl_percent_of_margin <= -stop_loss_percent:
-                return True, f"Reversed stop loss: {pnl_percent_of_margin*100:.2f}% of margin <= -{stop_loss_percent*100:.2f}%"
-        
-        # Check max hold time for reversed position (based on entry_time, not settlement)
-        hold_duration = position.hold_duration
-        minutes_held = hold_duration.total_seconds() / 60
-        
-        if minutes_held >= reversal_max_hold_minutes:
-            return True, f"Reversed max hold time: {minutes_held:.1f}m >= {reversal_max_hold_minutes}m"
-        
-        # Check profit target: % of MARGIN (with leverage this gives higher ROI)
-        if margin > 0:
-            profit_margin_percent = current_pnl / margin
-            if profit_margin_percent >= reversal_profit_target_percent:
-                return True, f"Reversed profit target: {profit_margin_percent*100:.4f}% of margin >= {reversal_profit_target_percent*100:.4f}%"
-        
-        return False, "Reversed: Holding"
     
     def execute_exit(
         self,
@@ -364,18 +224,10 @@ class PositionManager:
         skip_trade_log: bool = False
     ) -> Tuple[bool, float, float]:
         """
-        Close position and record results
-        
-        Args:
-            position_id: Position to close
-            reason: Reason for exit
-            exit_price: Exit price (optional, will fetch from API if not provided)
-            skip_trade_log: If True, don't log trade (used for settlement reversal first leg)
-        
+        Close position and record results.
+
         Returns:
             Tuple of (success, realized_pnl, funding_amount)
-            - For pre_settlement with reversal: PnL and funding to store on reversed position
-            - For reversed: Combined PnL (first_leg_pnl + first_leg_funding + current_pnl)
         """
         position = self.positions.get(position_id)
         if not position:
