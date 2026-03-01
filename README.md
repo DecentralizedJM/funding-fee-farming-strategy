@@ -115,30 +115,30 @@ sentiment. After settlement, the pressure doesn't stop:
 ├────────────────────────────────────────────────────────────────────┤
 │                                                                    │
 │  ┌──────────────────────────────────────────────────────────────┐  │
-│  │                    MAIN LOOP (adaptive)                       │  │
-│  │  30s normal scan → 3s fast scan near settlement               │  │
-│  │                                                               │  │
-│  │  1. Scan extreme rates → update watchlist                     │  │
-│  │  2. Check watchlist → enter post-settlement positions         │  │
+│  │                    MAIN LOOP (adaptive)                      │  │
+│  │  30s normal scan → 3s fast scan near settlement              │  │
+│  │                                                              │  │
+│  │  1. Scan extreme rates → update watchlist                    │  │
+│  │  2. Check watchlist → enter post-settlement positions        │  │
 │  │  3. Manage exits → trailing stop / TP / SL / time limit      │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                                                    │
-│  ┌───────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
-│  │ Funding       │  │  Strategy    │  │  Trade Executor      │   │
-│  │ Fetcher       │→ │  Engine      │→ │  (Mudrex API)        │   │
-│  │ (Bybit API)   │  │  • Watchlist │  │  • Open / Close      │   │
-│  │ • Rates       │  │  • Timing    │  │  • Position Sizing   │   │
-│  │ • Klines      │  │  • Multi-acct│  │  • Stop Loss         │   │
-│  └───────────────┘  └──────┬───────┘  └──────────────────────┘   │
-│                            │                                      │
-│                   ┌────────▼────────┐  ┌────────────────────┐    │
-│                   │ Position Manager│  │ Telegram Notifier  │    │
-│                   │ • Trailing Stop │  │ • Entry / Exit     │    │
-│                   │ • TP / SL       │  │ • /status /stats   │    │
-│                   │ • Persistence   │  │ • /kill /live      │    │
-│                   └─────────────────┘  └────────────────────┘    │
+│  ┌───────────────┐  ┌──────────────┐  ┌──────────────────────┐     │
+│  │ Funding       │  │  Strategy    │  │  Trade Executor      │     │
+│  │ Fetcher       │→ │  Engine      │→ │  (Mudrex API)        │     │
+│  │ (Bybit API)   │  │  • Watchlist │  │  • Open / Close      │     │
+│  │ • Rates       │  │  • Timing    │  │  • Position Sizing   │     │
+│  │ • Klines      │  │  • Multi-acct│  │  • Stop Loss         │     │
+│  └───────────────┘  └──────┬───────┘  └──────────────────────┘     │
+│                            │                                       │
+│                   ┌────────▼────────┐  ┌────────────────────┐      │
+│                   │ Position Manager│  │ Telegram Notifier  │      │
+│                   │ • Trailing Stop │  │ • Entry / Exit     │      │
+│                   │ • TP / SL       │  │ • /status /stats   │      │
+│                   │ • Persistence   │  │ • /kill /live      │      │
+│                   └─────────────────┘  └────────────────────┘      │
 ├────────────────────────────────────────────────────────────────────┤
-│  Data: Bybit for prices/rates/klines · Mudrex for execution only  │
+│  Data: Bybit for prices/rates/klines · Mudrex for execution only   │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
