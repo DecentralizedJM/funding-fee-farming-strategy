@@ -126,20 +126,16 @@ class StrategyEngine:
                 self._get_cached_balance(i)
 
     def _notify_skip_throttled(self, symbol: str, reason: str, account_index: Optional[int] = None) -> None:
-        """Send skip notification if not sent recently. account_index: if set, only that account's chats; else all."""
+        """Send skip notification at most once per symbol per hour."""
         now = datetime.now(timezone.utc)
         last_entry = self._skip_notification_cache.get(symbol)
-        
-        should_send = True
         if last_entry:
-            last_reason, last_time = last_entry
-            if last_reason == reason and (now - last_time) < timedelta(minutes=15):
-                should_send = False
-        
-        if should_send:
-            self.notifier.notify_skipped(symbol, reason, account_index=account_index)
-            self._skip_notification_cache[symbol] = (reason, now)
-            logger.debug(f"Sent skip notification for {symbol}: {reason}")
+            _, last_time = last_entry
+            if (now - last_time) < timedelta(hours=1):
+                return
+        self.notifier.notify_skipped(symbol, reason, account_index=account_index)
+        self._skip_notification_cache[symbol] = (reason, now)
+        logger.debug(f"Sent skip notification for {symbol}: {reason}")
     
     async def run(self) -> None:
         """Main strategy loop"""
@@ -308,7 +304,10 @@ class StrategyEngine:
 
             if not self._is_in_entry_window(opp["nextFundingTime"]):
                 reason = f"Outside entry window ({secs:.0f}s until settlement, window: {self.config.ENTRY_MIN_SECONDS_BEFORE}-{self.config.ENTRY_MAX_SECONDS_BEFORE}s)"
-                logger.info(f"Skipping {opp['symbol']}: {reason}")
+                if secs <= self.config.ENTRY_FAST_SCAN_WHEN_SECONDS_LEFT:
+                    logger.info(f"Skipping {opp['symbol']}: {reason}")
+                else:
+                    logger.debug(f"Skipping {opp['symbol']}: {reason}")
                 if self.config.NOTIFY_SKIPS:
                     self._notify_skip_throttled(opp["symbol"], reason, account_index=None)
                 continue
@@ -455,6 +454,20 @@ class StrategyEngine:
         if seconds_remaining < 0:
             logger.warning(f"Entry aborted: Settlement already passed ({seconds_remaining:.0f}s ago)")
             return False
+
+        # Re-verify funding rate is still extreme (opportunity data may be stale)
+        fresh_tickers = self.fetcher.get_tickers([symbol])
+        fresh_data = fresh_tickers.get(symbol)
+        if fresh_data:
+            fresh_rate = fresh_data.get("fundingRate", 0)
+            if abs(fresh_rate) < self.config.EXTREME_RATE_THRESHOLD:
+                logger.warning(
+                    f"Entry aborted: {symbol} funding rate dropped to {fresh_rate*100:.4f}% "
+                    f"(threshold {self.config.EXTREME_RATE_THRESHOLD*100:.2f}%)"
+                )
+                return False
+            price = fresh_data.get("lastPrice", price)
+            funding_rate = fresh_rate
 
         result = executor.open_position(
             symbol=symbol,

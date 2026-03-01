@@ -67,7 +67,7 @@ class FarmingConfig:
     # FUNDING RATE THRESHOLDS
     # ==========================================================================
     # Minimum funding rate to consider farming (0.6% = 0.006 for higher quality)
-    EXTREME_RATE_THRESHOLD: float = 0.006
+    EXTREME_RATE_THRESHOLD: float = 0.005
     
     # Very extreme rates for potentially larger positions
     VERY_EXTREME_THRESHOLD: float = 0.01  # 1%
@@ -77,12 +77,11 @@ class FarmingConfig:
     # ==========================================================================
     # Enter position in the last N seconds before settlement (minimize price exposure)
     # Entry allowed when seconds until settlement is between min and max
-    ENTRY_MIN_SECONDS_BEFORE: int = 1    # At least 1 second before (avoid race)
-    ENTRY_MAX_SECONDS_BEFORE: int = 30   # Up to 30 seconds before settlement
+    ENTRY_MIN_SECONDS_BEFORE: int = 5    # At least 5 seconds before settlement
+    ENTRY_MAX_SECONDS_BEFORE: int = 300  # Up to 5 minutes before settlement
     # When any opportunity has <= this many seconds to settlement, scan every ENTRY_FAST_SCAN_SECONDS
-    # so we don't miss the entry window (normal 30s scan would skip past it)
-    ENTRY_FAST_SCAN_WHEN_SECONDS_LEFT: int = 60
-    ENTRY_FAST_SCAN_SECONDS: int = 1
+    ENTRY_FAST_SCAN_WHEN_SECONDS_LEFT: int = 600  # Fast-scan within 10 minutes of settlement
+    ENTRY_FAST_SCAN_SECONDS: int = 3               # Every 3s in fast mode
     
     # ==========================================================================
     # RISK MANAGEMENT
