@@ -40,6 +40,9 @@ env/
 data/*.json
 !data/.gitkeep
 
+# Analysis output (raw JSON, not code)
+analysis/settlement_data.json
+
 # Logs
 logs/*.log
 !logs/.gitkeep
